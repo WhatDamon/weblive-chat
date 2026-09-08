@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+
+# Environment — never commit real secrets; copy .env.example for local dev
+.env
+.env.*
+!.env.example
+
+# Build output
+dist/
+build/
+out/
+
+# Vercel
+.vercel/
+
+# Logs & OS
+*.log
+npm-debug.log*
+.DS_Store
+
+# Test / coverage
+coverage/
