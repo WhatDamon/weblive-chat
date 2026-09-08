@@ -42,6 +42,7 @@
 | D9 | 防滥用 = 每 IP 限流（按消息/登录/开流分桶）+ 长度上限 + 可选禁词，全走环境变量 | 覆盖最小可信基线，配置化便于复用者自定 |
 | D10 | 存储超限**自动降级**：历史持久化与实时广播解耦，必要时停写历史、仅实时（§7.2） | 免费额度耗尽应"降级保活"而非静默丢消息 |
 | D11 | 可移植性规则（§4.1）：整数自增主键 + TEXT 载荷 + **时间一律 epoch ms 整数、应用层算好传参**，SQL 层禁方言写法（`now()`/`interval`/JSONB 等） | 否则换库要改代码；"跨方言子集 + 显式 provider"是复用的根基 |
+| D12 | 可选**来源白名单**：`ALLOWED_ORIGINS` 未设置 = 开放（CORS `*`）；设置后 fail-closed（不在名单的跨源请求 `403 origin_not_allowed`）；无 Origin 直连默认放行，`REQUIRE_ORIGIN=1` 可收紧（§6.1） | 防第三方站点套壳/跨站借力；明确其**非认证**，强制手段仍靠封禁 + 限流 |
 
 ## 3. 架构与数据流
 
@@ -180,7 +181,7 @@ Cookie 安全：`HttpOnly; SameSite=Lax; Secure`（生产）；`ADMIN_SECRET` �
 
 ### 5.3 状态码速查
 
-`200/201/204`、`400`（校验失败 code 细分）、`401`（口令错/会话失效）、`403 banned`、`404`、`409`（重复封禁）、`429`（限流 + `retry_after_ms`）、`500`、`503 not_configured`（缺 DATABASE_URL）、`503 db_unavailable`（存储冻结/不可用，见 §7.2 Neon 语义）。
+`200/201/204`、`400`（校验失败 code 细分）、`401`（口令错/会话失效）、`403 banned` / `403 origin_not_allowed`、`404`、`409`（重复封禁）、`429`（限流 + `retry_after_ms`）、`500`、`503 not_configured`（缺 DATABASE_URL）、`503 db_unavailable`（存储冻结/不可用，见 §7.2 Neon 语义）。
 
 ## 6. 防滥用与安全（MVP 基线）
 
@@ -188,9 +189,31 @@ Cookie 安全：`HttpOnly; SameSite=Lax; Secure`（生产）；`ADMIN_SECRET` �
 - **长度/格式**：nick ≤ 24 字符；text ≤ 2000 字符；均 trim + 去控制字符；`client_id` 须为合法 UUID。
 - **禁词**：`BANNED_WORDS`（逗号分隔，可选），命中 `400`。
 - **IP 来源**：`x-forwarded-for` 首跳（Vercel 注入），本地开发回退请求 IP；入库前规范化。
-- **CORS**：`CORS_ORIGINS` 逗号分隔白名单（默认 `*`，公开聊天端点）；管理端点仅同源（Cookie 机制天然同源约束）。
+- **CORS / 来源白名单**：见 §6.1。管理端点仅同源（Cookie 机制天然同源约束）。
 - **存储安全**：纯文本不存 HTML；XSS 为前端渲染责任（契约中明示）。
 - **仓库**：无任何密钥；`.env.example` 为唯一模板。
+
+### 6.1 来源白名单（Origin allowlist）
+
+> **定位与边界**：挡"第三方站点把你的 API 嵌进自家页面借力"与"跨站读取"；它**不是认证** —— 不带 Origin 的直连（curl/脚本/重放）无法靠它区分，强制手段仍是封禁 + 限流。
+
+环境变量：`ALLOWED_ORIGINS`（逗号分隔的精确域名）；`REQUIRE_ORIGIN=1`（可选收紧，见下）。
+
+| 配置 | 行为 |
+|---|---|
+| `ALLOWED_ORIGINS` 未设置 | **开放模式**：公开端点 CORS `*`；管理端点仍仅同源 |
+| 设置名单（如 `https://a.com,https://b.com`） | **白名单模式（fail-closed）**：请求带 Origin 且不在名单 → `403 origin_not_allowed`；在名单 → 回显对应 `Access-Control-Allow-Origin` |
+| 请求不带 Origin（同源 / 非浏览器 / curl） | 默认放行；`REQUIRE_ORIGIN=1` 时强制要求且必须在名单内（适合纯 API 部署） |
+
+规则：
+
+1. 精确匹配 `scheme://host[:port]`：忽略路径/query、去尾斜杠、小写主机；不做子串匹配；`https://*.a.com` 通配暂不支持（多域名直接列举）。
+2. 名单含多个域名时，禁止 `Access-Control-Allow-Origin: *` 与 `Access-Control-Allow-Credentials` 同用；所有响应带 `Vary: Origin`，防 CDN 缓存错发。
+3. 仅信 **Origin**，不信 `Referer`（可伪造、隐私策略下常缺失）。
+4. 管理端点 MVP 仅同源（Cookie 天然约束）；需自建跨源管理前端时，把该域名显式加入名单并启用 credentials 模式。
+5. `GET /api/stream`（SSE，EventSource 跨源带 Origin）与 POST 走同一中间件闸口；本地开发将 `http://localhost:<port>` 加入名单。
+6. 预检：OPTIONS 仅对名单内 Origin 放行并回 `Access-Control-Max-Age` 缓存预检结果。
+7. 非目标：路径/参数级访问控制（应用鉴权职责，不属于来源限制）。
 
 ## 7. 容量与成本模型（含免费额度核算）
 
@@ -241,7 +264,7 @@ Cookie 安全：`HttpOnly; SameSite=Lax; Secure`（生产）；`ADMIN_SECRET` �
 
 ## 8. 测试策略
 
-- **单元**（内存 repository，恒跑）：校验器（长度/禁词/UUID）、限流桶算法、会话签名/验签。
+- **单元**（内存 repository，恒跑）：校验器（长度/禁词/UUID）、限流桶算法、会话签名/验签、来源白名单逻辑（精确匹配/预检/无 Origin/单域名 credentials）。
 - **集成**（同一套用例，验证跨方言）：默认对**本地文件 SQLite**（`file:`）跑全部用例（零外部依赖）；当提供 Postgres `DATABASE_URL` 时对 **Postgres 再跑一遍**。覆盖：消息收发落库、软删占位、封禁即时生效、presence 计数、事件流游标续传。
 - 实现期以 repository 抽象隔离方言差异；CI 无外部依赖即可跑单元 + 文件 SQLite 集成层。
 
@@ -261,7 +284,7 @@ src/
   lib/stream.ts       # 事件流循环（可替换总线）
 public/admin.html     # 管理页（零构建）
 drizzle/              # SQL 迁移
-.env.example（含 DB_PROVIDER 与三种 URL 示例）  vercel.json  docs/api.md(实现期由本规格提取)
+.env.example（含 DB_PROVIDER、三种 URL、ALLOWED_ORIGINS 示例）  vercel.json  docs/api.md(实现期由本规格提取)
 tests/                # bun test（单元为主）
 ```
 
