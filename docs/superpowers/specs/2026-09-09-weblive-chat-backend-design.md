@@ -166,7 +166,7 @@ rate_limits (
 | `GET /api/messages?before=<id>&limit=50` | 历史回溯，newest-first，默认最近 50（≤200）；回溯深度默认全量，`HISTORY_MAX_BACKFILL` 可限深/关闭；软删消息返回占位；`ephemeral` 模式返回 `{messages: [], mode: "ephemeral"}` |
 | `GET /api/messages?since=<id>&limit=200` | 增量补齐（gap-sync，oldest-first；与事件流事件去重由客户端按 id 处理） |
 | `POST /api/messages` | body `{client_id, nick, text}` → `201 {id, created_at}`；`403 banned`（含 reason）／`429`／`400` |
-| `GET /api/stream?since=<id\|0>` | SSE 事件流（`text/event-stream`） |
+| `GET /api/stream?since=<id\|0>&client_id=<uuid>` | SSE 事件流（`text/event-stream`）。`client_id`（可选，须为合法 UUID）用于 presence 归因与多标签去重：缺省则每连接计入一次心跳 |
 
 SSE 事件类型：
 
