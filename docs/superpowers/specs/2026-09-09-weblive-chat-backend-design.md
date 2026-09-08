@@ -73,7 +73,7 @@
 1. 打开：登记 presence（upsert `last_seen`）。封禁语义为**禁言**（D5）：只拦截发消息，不拒绝/断开旁观流；本连接 IP 被禁言时收到 `ban` 提示事件（流保持打开）。
 2. 每 ~1s：`SELECT * FROM events WHERE id > since ORDER BY id LIMIT 100` → 按类型推送；成功后游标前移。兜底重连由**客户端**用 `since` 完成。
 3. 每 ~10s：upsert 自身 presence（TTL 45s，超时即视为离线）。
-4. 每 ~5s：`SELECT COUNT(*) FROM presence WHERE last_seen > :cutoff`（cutoff = 当前 epoch ms − 45s，应用层算好）→ 推 `presence` 事件。
+4. 每 ~5s：`SELECT COUNT(*) FROM presence WHERE last_seen > :cutoff`（cutoff = 当前 epoch ms − 45s，应用层算好）；**仅当人数相对上次变化时才推 `presence` 事件**（无变化不广播，避免周期无谓推送）。
 5. 推送间隔内发送 SSE 注释行（`: ping`）保活。
 6. 关闭/异常时删除或令自身 presence 行过期（靠 TTL，不依赖优雅关闭）。
 

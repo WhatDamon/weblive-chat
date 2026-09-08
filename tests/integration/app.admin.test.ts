@@ -49,6 +49,25 @@ describe("admin API", () => {
     expect(after.bans).toHaveLength(0);
   });
 
+  test("封禁列表 limit/offset 只收整数：12.5/负数 → 400 invalid_cursor（非 503）", async () => {
+    const { app } = await boot();
+    const login = await app.request("/api/admin/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ secret: "test-secret" }),
+    });
+    const cookie = (login.headers.get("set-cookie") ?? "").split(";")[0];
+    const res = await app.request("/api/admin/bans?limit=12.5&offset=-1", {
+      headers: { cookie },
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error.code).toBe("invalid_cursor");
+    const ok = await app.request("/api/admin/bans?limit=1&offset=0", {
+      headers: { cookie },
+    });
+    expect(ok.status).toBe(200);
+  });
+
   test("删消息：软删占位广播 delete 事件；不存在 → 404", async () => {
     const { app } = await boot();
     const post = await app.request("/api/messages", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ client_id: UUID, nick: "n", text: "待删" }) });

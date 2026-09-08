@@ -111,9 +111,19 @@ export function registerAdmin(app: Hono, d: AdminDeps) {
   });
 
   app.get("/api/admin/bans", guard, async (c) => {
-    const raw = Number(c.req.query("limit") ?? 200);
-    const limit = Math.min(Math.max(Number.isFinite(raw) ? raw : 200, 1), 500);
-    const offset = Math.max(Number(c.req.query("offset") ?? 0) || 0, 0);
+    const rawLimit = c.req.query("limit");
+    const rawOffset = c.req.query("offset");
+    // 与 chat 侧同款整数校验：limit/offset 只收纯数字串（浮点/负数/科学计数拒绝，
+    // 避免浮点入 SQL 被方言报错后误映射成 503）——非纯数字 → 400 invalid_cursor
+    if (
+      (rawLimit !== undefined && !/^\d+$/.test(rawLimit)) ||
+      (rawOffset !== undefined && !/^\d+$/.test(rawOffset))
+    )
+      return jsonError(c, 400, "invalid_cursor", {
+        message: "limit/offset 必须是整数",
+      });
+    const limit = Math.min(Math.max(Number(rawLimit ?? 200), 1), 500);
+    const offset = Math.max(Number(rawOffset ?? 0), 0);
     try {
       return c.json({ bans: await repo.banList(limit, offset) });
     } catch {

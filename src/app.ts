@@ -19,15 +19,31 @@ export function createApp(deps: AppDeps): Hono {
   // HISTORY_RETENTION_DAYS 播种：/api/meta 首次维护前即回报正确 retention_days（不干扰 notice 的 mode 判定）
   history.retentionDays = cfg.retentionDays;
   let booted: Promise<void> | null = null;
-  const boot = () =>
-    (booted ??= (async () => {
-      if (cfg.migrateOnBoot) await repo.bootstrap();
-    })());
+  const boot = async (): Promise<void> => {
+    if (!booted)
+      booted = (async () => {
+        try {
+          if (cfg.migrateOnBoot) await repo.bootstrap();
+        } catch (err) {
+          // bootstrap 失败不缓存 rejected promise（勿用 ??= 永久记忆失败）：
+          // 同实例下 DB 恢复后下一请求自动重试 bootstrap（DDL 幂等，自愈）；
+          // 并发双跑无害（CREATE TABLE IF NOT EXISTS），失败统一由中间件映射 503。
+          booted = null;
+          throw err;
+        }
+      })();
+    return booted;
+  };
   const app = new Hono();
 
-  // 惰性 boot（Vercel 冷启动幂等）+ 每请求快路径
+  // 惰性 boot（Vercel 冷启动幂等）+ 每请求快路径；bootstrap 异常统一 503 信封
+  // （§5.3/§7.2：存储不可用不得泄漏成默认 500）
   app.use("*", async (c, next) => {
-    await boot();
+    try {
+      await boot();
+    } catch {
+      return jsonError(c, 503, "db_unavailable");
+    }
     await next();
   });
 

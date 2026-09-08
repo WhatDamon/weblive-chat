@@ -55,34 +55,42 @@ export function registerChat(app: Hono, d: ChatDeps) {
   });
 
   app.get("/api/messages", async (c) => {
-    const before = parseIdParam(c.req.query("before"));
-    const since = parseIdParam(c.req.query("since"));
-    if (before !== null && since !== null)
-      return jsonError(c, 400, "invalid_body", {
-        message: "before 与 since 不可同时使用",
+    try {
+      const before = parseIdParam(c.req.query("before"));
+      const since = parseIdParam(c.req.query("since"));
+      if (before !== null && since !== null)
+        return jsonError(c, 400, "invalid_body", {
+          message: "before 与 since 不可同时使用",
+        });
+      const rawLimit = c.req.query("limit");
+      // limit 只收纯数字串：浮点/非数字拒绝（避免浮点串入 SQL），0/空按下限 1 夹取，不再静默回落 50
+      if (rawLimit !== undefined && !/^\d+$/.test(rawLimit))
+        return jsonError(c, 400, "invalid_cursor", {
+          message: "limit 必须是正整数",
+        });
+      const limit = Math.min(Math.max(Number(rawLimit ?? 50), 1), 200);
+      if (d.history.mode === "ephemeral")
+        return c.json({ messages: [], mode: "ephemeral" });
+      let rows: any[];
+      if (before !== null) rows = await repo.historyBefore(before, limit);
+      else if (since !== null) rows = await repo.historySince(since, limit);
+      // MAX_ID_BOUND 为 PG serial/int4 安全上界（同 history.ts performMaintenance 口径），勿改回 MAX_SAFE_INTEGER
+      else rows = await repo.historyBefore(MAX_ID_BOUND, limit);
+      let cutoff: number | null = null;
+      if (cfg.backfillMax > 0) {
+        const keep = await repo.historyBefore(MAX_ID_BOUND, cfg.backfillMax);
+        cutoff = keep.length >= cfg.backfillMax ? keep[keep.length - 1].id : 0;
+      }
+      const filtered =
+        cutoff === null ? rows : rows.filter((m) => m.id >= cutoff);
+      return c.json({
+        messages: filtered.map(fmtMessage),
+        mode: d.history.mode,
       });
-    const rawLimit = c.req.query("limit");
-    // limit 只收纯数字串：浮点/非数字拒绝（避免浮点串入 SQL），0/空按下限 1 夹取，不再静默回落 50
-    if (rawLimit !== undefined && !/^\d+$/.test(rawLimit))
-      return jsonError(c, 400, "invalid_cursor", {
-        message: "limit 必须是正整数",
-      });
-    const limit = Math.min(Math.max(Number(rawLimit ?? 50), 1), 200);
-    if (d.history.mode === "ephemeral")
-      return c.json({ messages: [], mode: "ephemeral" });
-    let rows: any[];
-    if (before !== null) rows = await repo.historyBefore(before, limit);
-    else if (since !== null) rows = await repo.historySince(since, limit);
-    // MAX_ID_BOUND 为 PG serial/int4 安全上界（同 history.ts performMaintenance 口径），勿改回 MAX_SAFE_INTEGER
-    else rows = await repo.historyBefore(MAX_ID_BOUND, limit);
-    let cutoff: number | null = null;
-    if (cfg.backfillMax > 0) {
-      const keep = await repo.historyBefore(MAX_ID_BOUND, cfg.backfillMax);
-      cutoff = keep.length >= cfg.backfillMax ? keep[keep.length - 1].id : 0;
+    } catch {
+      // 存储不可用/冻结（§5.3/§7.2）统一 503 信封：历史读是最高频轮询路径，勿漏成 Hono 默认 500
+      return jsonError(c, 503, "db_unavailable");
     }
-    const filtered =
-      cutoff === null ? rows : rows.filter((m) => m.id >= cutoff);
-    return c.json({ messages: filtered.map(fmtMessage), mode: d.history.mode });
   });
 
   app.post("/api/messages", async (c) => {

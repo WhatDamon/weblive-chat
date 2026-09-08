@@ -180,6 +180,38 @@ describe("chat 公开端点", () => {
       JSON.parse(msgEvs[msgEvs.length - 1].payload).id.startsWith("e"),
     ).toBe(true);
   });
+
+  test("DB 故障：GET /api/messages → 503 db_unavailable 信封（非 500）", async () => {
+    const { app, repo } = await boot();
+    const orig = repo.historyBefore.bind(repo);
+    repo.historyBefore = async () => {
+      throw new Error("conn refused");
+    };
+    const res = await app.request("/api/messages?limit=5", {
+      headers: { "x-forwarded-for": "9.9.9.9" },
+    });
+    expect(res.status).toBe(503);
+    expect((await res.json()).error.code).toBe("db_unavailable");
+    repo.historyBefore = orig;
+  });
+
+  test("bootstrap 失败 → 503 且不缓存：恢复后同实例下一请求自愈", async () => {
+    const { app, repo } = await boot();
+    const orig = repo.bootstrap.bind(repo);
+    repo.bootstrap = async () => {
+      throw new Error("ddl failed");
+    };
+    const res1 = await app.request("/api/meta", {
+      headers: { "x-forwarded-for": "9.9.9.9" },
+    });
+    expect(res1.status).toBe(503);
+    expect((await res1.json()).error.code).toBe("db_unavailable");
+    repo.bootstrap = orig; // DB 恢复
+    const res2 = await app.request("/api/meta", {
+      headers: { "x-forwarded-for": "9.9.9.9" },
+    });
+    expect(res2.status).toBe(200);
+  });
 });
 
 describe("SSE 事件流", () => {

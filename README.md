@@ -18,7 +18,7 @@
 
 - **免登录**：客户端自持 `client_id`（UUID，无账号体系）；部署者通过环境变量配置管理员口令。
 - **实时**：`GET /api/stream` SSE 事件流 + `POST /api/messages`；`since` 游标自动续传（断线重连不丢事件）。
-- **在线人数**：按 `client_id` 去重（同浏览器多标签 = 1 人），45s TTL 心跳窗口，5s 广播一次。
+- **在线人数**：按 `client_id` 去重（同浏览器多标签 = 1 人），45s TTL 心跳窗口，每 ~5s 检测一次、**人数变化时才广播**（无变化不推）。
 - **管理**：内置零构建 `/admin` 页面与 JSON API——口令登录、封禁/解封 IP（**禁言不禁看**）、软删消息、查看在线/历史/stats。
 - **持久化可选降级**：`events` 出站表保证实时广播，`messages` 历史表按「天数 × 行数」双控滚动保留；接近上限自动逐级收缩保留期，触顶自动切 `ephemeral`（仅实时、停写历史）并广播 `notice`。
 - **防滥用**：每 IP 分桶限流（消息/开流/登录）、昵称/内容长度上限、可选禁词（子串匹配）。
@@ -62,7 +62,7 @@ bun run dev                   # http://localhost:3000
 | `DB_MIGRATE_ON_BOOT` | `true` | 启动幂等建表（`CREATE TABLE IF NOT EXISTS`）；`"false"` 关闭 |
 | `ADMIN_SECRET` | 开发回退 `dev-insecure-secret` | 管理口令；**生产（`NODE_ENV=production`）缺失即拒绝启动** |
 | `NODE_ENV` | `development` | Vercel 自动设为 `production` |
-| `ALLOWED_ORIGINS` | 空（开放） | 逗号分隔精确 Origin，如 `https://a.com,http://localhost:3000`；一旦设置即白名单 fail-closed |
+| `ALLOWED_ORIGINS` | 空（开放） | 逗号分隔精确 Origin，如 `https://a.com,http://localhost:3000`；一旦设置即白名单 fail-closed。⚠️ **设置时须把部署自身域名一并列入**（同源 `/demo.html`、`/admin` 页与同源前端，浏览器对 POST 必带 Origin），否则内置页面/同源应用的写请求会被 403 拒 |
 | `REQUIRE_ORIGIN` | `0` | `1` 时无 Origin 的直连（curl/脚本）也拒绝（`403 missing_origin`） |
 | `NICK_MAX` | `24` | 昵称最大字符数 |
 | `TEXT_MAX` | `1000` | 消息内容最大字符数 |
@@ -89,6 +89,8 @@ bun run dev                   # http://localhost:3000
 | 生产 / 自托管 Postgres | `postgres` | `postgres://user:pass@host:5432/db?sslmode=require` |
 
 > ⚠️ **Vercel 函数文件系统是临时的**：`file:` 型 SQLite 只能用于本地，**禁止作为 Vercel 生产存储**（数据会随实例回收丢失）。生产 SQLite 必须走远程 Turso。
+>
+> ⚠️ **Origin 白名单会锁住内置页面**：一旦设置 `ALLOWED_ORIGINS`，浏览器端写请求（POST/DELETE）会带当前页 Origin——**必须把部署自身域名一并列入**（例如 `https://你的项目.vercel.app`），否则内置 `/demo.html` 的发言与 `/admin` 的封禁/删除都会被 `403 origin_not_allowed` 拒绝（GET 历史/SSE 流不受影响）。
 
 换 provider = 改 `DB_PROVIDER` + `DATABASE_URL` 两个值（schema 为跨方言子集，启动自动建表），**无需改代码或跑迁移**。
 

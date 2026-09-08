@@ -84,6 +84,7 @@
 | 请求不带 Origin | 默认放行（同源/curl）；`REQUIRE_ORIGIN=1` 时拒绝 → `403 missing_origin` |
 
 - 匹配：精确 `scheme://host[:port]`，忽略路径/query、去尾斜杠、主机小写；**不支持通配**。
+- ⚠️ **白名单会锁住同源内置页**：浏览器写请求（POST/DELETE）必带当前页 Origin，设置名单时**必须把部署自身域名一并列入**，否则同源 `/demo.html` 发言与 `/admin` 封禁/删除均被 `403 origin_not_allowed` 拒（GET 历史/SSE 流不受影响）。
 - `OPTIONS` 预检：仅对放行 Origin 回 `204`，带 `Access-Control-Allow-Methods: GET,POST,DELETE,OPTIONS`、`Access-Control-Allow-Headers: content-type`、`Access-Control-Max-Age: 86400`。
 - 白名单是**来源限制而非认证**：拦不住不带 Origin 的脚本/curl（除非 `REQUIRE_ORIGIN=1`）；强制手段靠封禁 + 限流。
 
