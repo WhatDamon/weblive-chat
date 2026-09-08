@@ -484,6 +484,7 @@ export interface Repo {
   presenceUpsert(clientId: string, at: number): Promise<void>;
   presenceCount(cutoff: number): Promise<number>;
   rateHit(bucket: string, scope: string, windowStart: number): Promise<number>;
+  /** 消息行统计：total 与 retained 同为**物理行数**（含软删占位行；软删不删行，仅保留裁剪/超龄清理才物理删除）。容量判定/降级/estimate_bytes 一律用此口径。 */
   messageStats(): Promise<{ total: number; retained: number }>;
   cleanupEvents(before: number): Promise<number>;
   cleanupPresence(before: number): Promise<number>;
@@ -519,7 +520,7 @@ const SQL = {
   presCnt: "SELECT COUNT(*) AS c FROM presence WHERE last_seen > ?",
   rateHit: `INSERT INTO rate_limits (bucket, scope, window_start, count) VALUES (?, ?, ?, 1)
             ON CONFLICT (bucket, scope, window_start) DO UPDATE SET count = count + 1 RETURNING count`,
-  stats: "SELECT COUNT(*) AS total, COUNT(deleted_at) AS del FROM messages",
+  stats: "SELECT COUNT(*) AS total FROM messages",
   delEvents: "DELETE FROM events WHERE created_at < ?",
   delPres: "DELETE FROM presence WHERE last_seen < ?",
   delRates: "DELETE FROM rate_limits WHERE window_start < ?",
@@ -594,7 +595,12 @@ class SqliteRepo implements Repo {
   async presenceUpsert(clientId, at) { await this.exec(SQL.presUp, [clientId, at]); }
   async presenceCount(cutoff) { const r = await this.run<any[]>(SQL.presCnt, [cutoff]); return Number(r[0]?.c ?? 0); }
   async rateHit(bucket, scope, windowStart) { const r = await this.run<any[]>(SQL.rateHit, [bucket, scope, windowStart]); return Number(r[0]?.count ?? 1); }
-  async messageStats() { const r = await this.run<any[]>(SQL.stats, []); return { total: Number(r[0]?.total ?? 0), retained: Number(r[0]?.total ?? 0) - Number(r[0]?.del ?? 0) }; }
+  async messageStats() {
+    // 口径 = 物理行（含软删占位）；软删不改行数，仅保留裁剪物理删除 → total/retained 恒等，双字段仅为语义区分
+    const r = await this.run<any[]>(SQL.stats, []);
+    const total = Number(r[0]?.total ?? 0);
+    return { total, retained: total };
+  }
   async cleanupEvents(before) { return this.affected(SQL.delEvents, [before]); }
   async cleanupPresence(before) { return this.affected(SQL.delPres, [before]); }
   async cleanupRateLimits(before) { return this.affected(SQL.delRates, [before]); }
@@ -1096,6 +1102,7 @@ export function newHistoryState(): HistoryState { return { writeCount: 0, mode: 
 
 export interface HistoryDeps {
   repo: {
+    /** messageStats 口径 = 物理行（含软删占位），容量/降级/estimate_bytes 唯一依据 */
     messageStats(): Promise<{ total: number; retained: number }>;
     cleanupEvents(before: number): Promise<number>;
     cleanupPresence(before: number): Promise<number>;
@@ -1117,6 +1124,7 @@ export async function performMaintenance(deps: HistoryDeps, now = Date.now()): P
   await repo.cleanupEvents(now - cfg.eventsTtlMs);
   await repo.cleanupPresence(now - cfg.presenceTtlMs * 3);
   await repo.cleanupRateLimits(now - 2 * 3_600_000);
+  // 物理行口径：retained = 物理行（含软删占位），决定档位/裁剪（容量唯一依据）
   let { retained } = await repo.messageStats();
   let days = cfg.retentionDays;
   let deleted = 0;
