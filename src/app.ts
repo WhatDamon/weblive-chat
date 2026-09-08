@@ -5,6 +5,7 @@ import { classifyOrigin } from "./lib/security";
 import { jsonError } from "./lib/http";
 import { registerChat } from "./routes/chat";
 import { registerAdmin } from "./routes/admin";
+import { registerPages } from "./routes/pages";
 import { newHistoryState, performMaintenance } from "./lib/history";
 
 export interface AppDeps {
@@ -85,6 +86,7 @@ export function createApp(deps: AppDeps): Hono {
   registerChat(app, { cfg, repo, history, maintain });
   // T7：管理 JSON API（HMAC Cookie 会话；Origin 闸口已由 /api/* 中间件覆盖）
   registerAdmin(app, { cfg, repo, history, maintain });
-  // T8: registerPages(app);
+  // T8：同源静态页（零构建 admin.html/demo.html 参考客户端，D15）
+  registerPages(app);
   return app;
 }
