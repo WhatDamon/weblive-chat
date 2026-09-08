@@ -4,6 +4,7 @@ import type { Repo } from "./lib/repo";
 import { classifyOrigin } from "./lib/security";
 import { jsonError } from "./lib/http";
 import { registerChat } from "./routes/chat";
+import { registerAdmin } from "./routes/admin";
 import { newHistoryState, performMaintenance } from "./lib/history";
 
 export interface AppDeps {
@@ -50,40 +51,40 @@ export function createApp(deps: AppDeps): Hono {
     await next();
   });
 
-  registerChat(app, {
-    cfg,
-    repo,
-    history,
-    // §7.2 维护：每 maintenanceEvery 次写触发一次清理与档位评估；档位变化广播 notice
-    maintain: async (now = Date.now()) => {
-      history.writeCount += 1;
-      if (history.writeCount % cfg.maintenanceEvery !== 0)
-        return { mode: history.mode, retentionDays: history.retentionDays };
-      const res = await performMaintenance({ repo, cfg }, now);
-      if (
-        res.mode !== history.mode ||
-        res.retentionDays !== history.retentionDays
-      ) {
-        const prev = history.mode;
-        history.mode = res.mode;
-        history.retentionDays = res.retentionDays;
-        if (prev !== res.mode) {
-          await repo
-            .insertEvent(
-              "notice",
-              JSON.stringify({
-                kind: "history_mode",
-                mode: res.mode,
-                retention_days: res.retentionDays,
-              }),
-              now,
-            )
-            .catch(() => {});
-        }
-      }
+  // §7.2 维护：每 maintenanceEvery 次写触发一次清理与档位评估；档位变化广播 notice
+  // （chat 与 admin 共用同一维护闭包与 history 状态，保持档位/计数单一来源）
+  const maintain = async (now = Date.now()) => {
+    history.writeCount += 1;
+    if (history.writeCount % cfg.maintenanceEvery !== 0)
       return { mode: history.mode, retentionDays: history.retentionDays };
-    },
-  });
-  // T7: registerAdmin(app, {cfg, repo}); T8: registerPages(app);
+    const res = await performMaintenance({ repo, cfg }, now);
+    if (
+      res.mode !== history.mode ||
+      res.retentionDays !== history.retentionDays
+    ) {
+      const prev = history.mode;
+      history.mode = res.mode;
+      history.retentionDays = res.retentionDays;
+      if (prev !== res.mode) {
+        await repo
+          .insertEvent(
+            "notice",
+            JSON.stringify({
+              kind: "history_mode",
+              mode: res.mode,
+              retention_days: res.retentionDays,
+            }),
+            now,
+          )
+          .catch(() => {});
+      }
+    }
+    return { mode: history.mode, retentionDays: history.retentionDays };
+  };
+
+  registerChat(app, { cfg, repo, history, maintain });
+  // T7：管理 JSON API（HMAC Cookie 会话；Origin 闸口已由 /api/* 中间件覆盖）
+  registerAdmin(app, { cfg, repo, history, maintain });
+  // T8: registerPages(app);
   return app;
 }
