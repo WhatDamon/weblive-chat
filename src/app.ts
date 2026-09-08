@@ -90,3 +90,25 @@ export function createApp(deps: AppDeps): Hono {
   registerPages(app);
   return app;
 }
+
+/**
+ * 生产组装（读真实 env：Bun 自动加载 .env 到 process.env；Vercel 注入 process.env）。
+ * index.ts 双入口共用；buildApp() 由 loadConfig 读取 process.env——注意 loadConfig 只读
+ * 传入的 env（不隐式读 process.env），此处必须显式传，否则 dev/server 将忽略全部环境变量。
+ */
+export async function buildApp(
+  env: Record<string, string | undefined> = process.env as Record<
+    string,
+    string | undefined
+  >,
+) {
+  const { loadConfig } = await import("./lib/config");
+  const { createRepo } = await import("./lib/repo");
+  const cfg = loadConfig(env);
+  const repo = await createRepo(
+    cfg.dbProvider,
+    cfg.databaseUrl,
+    cfg.tursoAuthToken,
+  );
+  return { cfg, repo, app: createApp({ cfg, repo }) };
+}
