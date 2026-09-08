@@ -1,7 +1,7 @@
 # weblive-chat 后端设计规格
 
 - 日期：2026-09-09
-- 状态：待审查（draft）
+- 状态：已批准（approved，2026-09-09）
 - 范围：后端服务 + API 契约 v0.1 + 内置**零构建验证 Demo**（`public/demo.html`，同仓同 Vercel 项目、同源部署，兼作契约参考客户端）；完整前端应用不在本期，前端将依据本文档的契约接入
 
 ## 1. 产品目标与约束
@@ -173,7 +173,7 @@ SSE 事件类型：
 | event | data | 语义 |
 |---|---|---|
 | `message` | `{id, client_id, nick, text, created_at}` | 新消息（含自己发的，按 id 去重） |
-| `delete` | `{message_id}` | 某消息被管理员删除 → 前端替换为占位 |
+| `delete` | `{id: string}` | 某消息被管理员删除 → 前端替换为占位（字段名与 MessageView.id 一致；早期草稿写作 `{message_id}`，实现收敛为 `{id}`，见 §11） |
 | `presence` | `{online: number}` | 在线**人数**（45s TTL 窗口；按 `client_id` 去重，同浏览器多标签 = 1） |
 | `notice` | `{kind: "history_mode", mode}` | 持久化模式变化（如自动降级到 `ephemeral`）→ 前端可提示 |
 | `ban` | `{reason}` | 本连接 IP 被**禁言**（仅推给命中 IP 的流）→ 前端提示"你已被禁言"；流保持打开可继续旁观 |
@@ -319,3 +319,19 @@ tests/                # bun test（单元为主）
 - 发消息 events + messages 双写须在同一事务内（SQLite batch / PG begin），失败整体回滚。
 - "平均行字节"估算与保留行数统计的实现成本（`COUNT` 每 ~100 次写入评估一次），避免每次写入全表扫描。
 - 静态页随函数部署：`/demo.html`、`/admin` 由 Hono 同进程读取 `public/` 提供（同源）；Vercel 上将 `public/**` 打进函数文件系统（实现期验证）。
+
+## 11. 实现后记录（2026-09-09，T1–T10 落地，状态 approved）
+
+本文档已由草案转为已批准实现契约；`docs/api.md` 按实现逐项校正。与早期草稿文字不一致处均属**实现收敛**（Ruling 记录于计划执行账本）：
+
+- **events payload 构造于 repo 事务内**：`sendMessageAndEvent` 先插 `messages` 拿自增 id，再构造 `{id: String(messageId), client_id, nick, text, created_at}` 载荷并在同一事务内插 `events`（双写原子）。
+- **SSE 支持可选 `client_id=<uuid>`**（presence 归因/多标签去重），缺失回落每连接 `anon-<uuid>`。
+- **`ephemeral` 消息 id 形如 `e<eventId>`**：避开 `messages.id` 命名空间，杜绝 delete 事件误删直播消息。
+- **`delete` 事件载荷为 `{id}`**（草案写作 `{message_id}`），与 MessageView.id 同字段。
+- **管理契约（Ruling B）**：登录 body `{secret}`、会话探测 `GET /api/admin/me → {authed:true}`、重复封禁幂等 upsert `200 {created:boolean}`（无 409）、会话有效 `ADMIN_SESSION_DAYS` 默认 7d；不再提供 `GET /api/admin/messages`（历史走公开端点）。
+- **`/api/messages` 契约收紧**：`before`/`since` 互斥（400 invalid_body）；`limit` 缺省 50、1–200 夹取、非纯数字 400 invalid_cursor；游标/`limit` 上界夹取 `MAX_ID_BOUND`（2³¹−1，PG serial/int4 安全）。
+- **messages 响应 `id` 一律字符串、`created_at` ISO 8601**；SSE 事件载荷 `created_at` 为 epoch ms 数字。
+- **`rate_limits` 表落地**（D16 第 5 表）：`bucket × scope × window_start` 复合主键，`ON CONFLICT … count=count+1 RETURNING count` 原子计数（双方言同 SQL）。
+- **存储层 = 手写可移植 SQL**（`lib/repo.ts` 双驱动 + `lib/ddl.ts` 按 provider 幂等 DDL；无 ORM）；`bans` 表以 `ip` 为 PRIMARY KEY（草案 §4 的独立 `id`+UNIQUE 收敛掉），保留 `banned_by` 审计列。
+- **限流/长度默认值对齐**（§6）：消息 10/min、开流 20/min、登录 5/min（60s 固定窗口）；text ≤ 1000。
+- **§10 待确认项结果**：双写事务（✓）、静态页随函数 `includeFiles`（✓）、`hono` 4.13 无 `node-serverless` 子路径 → `index.ts` 导出自持懒转发 handler（✓）、`Bun.serve idleTimeout` 上限 255（✓）、开流限流接线（✓）。**剩余仅云端实测**（Vercel 函数 300s/SSE 断线续传/`process.cwd()` 下 `public/` 落盘）——`docs/api.md` 已把断线重连列为客户端义务。

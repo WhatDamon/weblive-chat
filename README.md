@@ -1,7 +1,130 @@
 # weblive-chat
 
-实时聊天后端 —— 目标：免登录使用、可直接部署到 Vercel、实时向前端广播在线人数、可选聊天记录持久化、管理员可封禁 IP。
+免登录、可**直接部署到 Vercel** 的实时聊天后端：通过 SSE + POST 向多个前端广播消息与**在线人数**，可配置的聊天记录持久化（超限自动收缩/降级），并内置管理页供管理员**禁言封禁 IP** 与软删违规消息。
 
-使用 [Bun](https://bun.sh) 进行项目管理与本地开发（对外部署到 Vercel）。
+```
+┌──────────────┐  POST /api/messages   ┌───────────────────────────┐
+│  任意前端      │ ─────────────────────▶│      Hono App（单函数）      │
+│ demo.html /  │                       │  Bun 本地 / Vercel Node    │
+│ 自建网页/小程序 │  GET /api/stream ◀────│  chat / admin / 静态页      │
+└──────────────┘    (SSE 事件流)        └────────────┬──────────────┘
+                                                     ▼
+                                  ┌──────────────────────────────┐
+                                  │  SQLite（Turso）｜ PostgreSQL   │
+                                  │  messages / events / presence /│
+                                  │  bans / rate_limits            │
+                                  └──────────────────────────────┘
+```
 
-> 项目仍在设计阶段，README 与 API 契约即将补充。参见 `docs/`。
+- **免登录**：客户端自持 `client_id`（UUID，无账号体系）；部署者通过环境变量配置管理员口令。
+- **实时**：`GET /api/stream` SSE 事件流 + `POST /api/messages`；`since` 游标自动续传（断线重连不丢事件）。
+- **在线人数**：按 `client_id` 去重（同浏览器多标签 = 1 人），45s TTL 心跳窗口，5s 广播一次。
+- **管理**：内置零构建 `/admin` 页面与 JSON API——口令登录、封禁/解封 IP（**禁言不禁看**）、软删消息、查看在线/历史/stats。
+- **持久化可选降级**：`events` 出站表保证实时广播，`messages` 历史表按「天数 × 行数」双控滚动保留；接近上限自动逐级收缩保留期，触顶自动切 `ephemeral`（仅实时、停写历史）并广播 `notice`。
+- **防滥用**：每 IP 分桶限流（消息/开流/登录）、昵称/内容长度上限、可选禁词（子串匹配）。
+- **可移植存储**：`DB_PROVIDER` 一键切换 SQLite（本地 `file:` / 生产 Turso）或任意 Postgres（Neon / Supabase / 自托管）——业务与 API 契约代码零改动。
+
+技术栈：Bun（本地开发/测试）、Hono（双运行时：Bun.serve + Vercel Node）、SSE；存储层为**手写可移植 SQL**（`@libsql/client` / `postgres.js`，本期不引 ORM，建表走启动幂等 DDL）。
+
+## 快速开始
+
+前置：Bun ≥ 1.2（部署到 Vercel 无需本地 Bun）。
+
+```bash
+bun install
+cp .env.example .env          # 本地默认 file: SQLite，零外部依赖
+bun run dev                   # http://localhost:3000
+```
+
+- 验证 Demo（聊天/历史/在线人数/自封自测）：打开 <http://localhost:3000/demo.html>
+- 管理页：<http://localhost:3000/admin>（本地未设 `ADMIN_SECRET` 时的开发口令为 `dev-insecure-secret`）
+
+常用命令：
+
+| 命令 | 说明 |
+|---|---|
+| `bun run dev` | 本地热重载开发服务器 |
+| `bun run start` | 本地单次启动（同 dev 无热重载） |
+| `bun test` | 全部测试（默认跑本地文件 SQLite） |
+| `bun run test:pg` | 同一套集成用例跑 Postgres（需先设 `DATABASE_URL`） |
+| `bun run typecheck` | `tsc --noEmit` 类型检查 |
+| `bun tests/e2e/e2e-acceptance.ts` | 本地端到端验收（真实启动服务器，跨功能链断言） |
+
+## 环境变量
+
+全部通过环境变量配置，仓库不存任何密钥（只提交 `.env.example`）。
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `DB_PROVIDER` | `sqlite` | `sqlite` ｜ `postgres` |
+| `DATABASE_URL` | `file:./data/dev.db` | 见下「存储形态」；`postgres` 时必须为 `postgres://…` |
+| `TURSO_AUTH_TOKEN` | 空 | 仅 Turso（`libsql://`）需要 |
+| `DB_MIGRATE_ON_BOOT` | `true` | 启动幂等建表（`CREATE TABLE IF NOT EXISTS`）；`"false"` 关闭 |
+| `ADMIN_SECRET` | 开发回退 `dev-insecure-secret` | 管理口令；**生产（`NODE_ENV=production`）缺失即拒绝启动** |
+| `NODE_ENV` | `development` | Vercel 自动设为 `production` |
+| `ALLOWED_ORIGINS` | 空（开放） | 逗号分隔精确 Origin，如 `https://a.com,http://localhost:3000`；一旦设置即白名单 fail-closed |
+| `REQUIRE_ORIGIN` | `0` | `1` 时无 Origin 的直连（curl/脚本）也拒绝（`403 missing_origin`） |
+| `NICK_MAX` | `24` | 昵称最大字符数 |
+| `TEXT_MAX` | `1000` | 消息内容最大字符数 |
+| `BANNED_WORDS` | 空 | 逗号分隔禁词（**子串匹配**） |
+| `HISTORY_RETENTION_DAYS` | `90` | 历史保留天数上限（自动逐级收缩 90→30→10→3→1） |
+| `HISTORY_MAX_ROWS` | `500000` | 历史行数上限（接近上限收缩；到达硬顶切 `ephemeral` 仅实时） |
+| `HISTORY_MAX_BACKFILL` | `0` | 历史回溯深度上限；`0` = 不限制（任何人可翻全量历史） |
+| `MSG_RATE_PER_MIN` | `10` | 每 IP 每分钟可发消息数（60s 固定窗口） |
+| `STREAM_RATE_PER_MIN` | `20` | 每 IP 每分钟可开流数 |
+| `LOGIN_RATE_PER_MIN` | `5` | 每 IP 每分钟登录尝试数 |
+| `MAINTENANCE_EVERY` | `100` | 每 N 次写入触发一次保留期评估与过期清理 |
+| `DEV_IP` | `127.0.0.1` | 无 `x-forwarded-for` 时的回退 IP（仅本地开发/测试） |
+| `ADMIN_SESSION_DAYS` | `7` | 管理会话 Cookie 有效天数 |
+| `PORT` | `3000` | 本地开发服务器端口（Vercel 忽略） |
+
+> 内部固定常量（不可配）：presence TTL 45s、轮询 1s、心跳 15s、events 出站表保留 1h。
+
+### 存储形态（三种 `DATABASE_URL`）
+
+| 用途 | `DB_PROVIDER` | `DATABASE_URL` |
+|---|---|---|
+| 本地开发 / 测试 | `sqlite` | `file:./data/dev.db` |
+| 生产 SQLite | `sqlite` | `libsql://<db>-<org>.turso.io` + `TURSO_AUTH_TOKEN` |
+| 生产 / 自托管 Postgres | `postgres` | `postgres://user:pass@host:5432/db?sslmode=require` |
+
+> ⚠️ **Vercel 函数文件系统是临时的**：`file:` 型 SQLite 只能用于本地，**禁止作为 Vercel 生产存储**（数据会随实例回收丢失）。生产 SQLite 必须走远程 Turso。
+
+换 provider = 改 `DB_PROVIDER` + `DATABASE_URL` 两个值（schema 为跨方言子集，启动自动建表），**无需改代码或跑迁移**。
+
+## 部署到 Vercel
+
+本项目是**单函数应用**（`vercel.json` 已配好 `@vercel/node` 构建 `src/index.ts`、`maxDuration: 300`、`public/**` 打进函数），零构建、零手动迁移。步骤：
+
+1. 导入仓库到 Vercel（Framework 任选；构建命令可为空——`vercel.json` 已声明函数构建）。
+2. 配置环境变量（必配）：`ADMIN_SECRET`（长随机串）、`DATABASE_URL`、按需 `TURSO_AUTH_TOKEN` / `ALLOWED_ORIGINS` / 限流与保留旋钮。
+3. 部署完成后：`https://<你的域名>/demo.html` 自测；`/admin` 进管理页。
+
+Turso 建库参考：
+
+```bash
+turso db create weblive-chat
+turso db show weblive-chat --url          # → libsql://weblive-chat-<org>.turso.io
+turso db tokens create weblive-chat      # → 粘贴到 TURSO_AUTH_TOKEN
+```
+
+Neon / Supabase / 自托管 Postgres：连接串形如 `postgres://…?sslmode=require`，`DB_PROVIDER=postgres` 即可。Neon 免费档按 CU 小时计费——长连轮询会让 compute 7×24 活跃，请仅在低流量演示时选用（详见设计规格 §7.1）。
+
+平台时长提示：Vercel 函数单次最长 300s（Hobby），SSE 流到点断开属**预期行为**——客户端用 `since` 自动重连续传即可（内置 demo 已示范固定 1s 重连）。
+
+## 文档
+
+- **API 契约速查**：`docs/api.md`（端点 / SSE 事件 / 错误码 / Origin 白名单 / curl 示例）
+- **完整设计规格**：`docs/superpowers/specs/2026-09-09-weblive-chat-backend-design.md`（决策、数据模型、容量成本、测试策略）
+
+## 已知边界（MVP 取舍）
+
+- **禁词为子串匹配**：对中文易误伤（如禁「赌博」会命中含该子串的任意文本），仅服务端下发、无客户端过滤器。
+- **封禁为精确 IP**：同 NAT/CGNAT 下可能波及无辜用户；IPv6 支持但前缀/CIDR 封禁留待后续。
+- **`x-forwarded-for` 取首跳**：只有**直连 Vercel**（Vercel 注入且不可伪造）时才可信；若再套 CDN，需按你的 CDN 实际行为调整取跳（前置代理可伪造该头）。
+- **历史=公开存档**：免登录设计下，任何人（含未发言者）都能经 `GET /api/messages` 翻阅历史——属公开聊天室的默认形态；用 `HISTORY_MAX_BACKFILL` 可限制回溯深度或直接关闭历史开放。
+- **合规提示**：IP 属个人数据。封禁表会留存被封 IP 与原因，请在部署前确认你的用途符合当地法规（可经管理页随时解封；如需彻底清除可直连数据库删除）。
+
+## License
+
+MIT © 2026 Damon Lu
