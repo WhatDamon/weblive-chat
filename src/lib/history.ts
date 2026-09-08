@@ -17,19 +17,28 @@ export function decideHistory(
   cfg: { retentionDays: number; maxRows: number },
 ): { mode: HistoryMode; retentionDays: number } {
   const max = cfg.maxRows;
-  if (max <= 0 || stats.retained >= max) return { mode: "ephemeral", retentionDays: 1 };
+  if (max <= 0 || stats.retained >= max)
+    return { mode: "ephemeral", retentionDays: 1 };
   const ratio = stats.retained / max;
   let days = cfg.retentionDays;
   for (const [threshold, d] of STEPS) {
-    if (ratio >= threshold) days = d;
+    // Math.min 保护：阶梯天数永不高于配置基线；cfg.retentionDays < 30 时高负载不得反向升档/静默拉长保留期
+    if (ratio >= threshold) days = Math.min(days, d);
   }
   if (days === cfg.retentionDays) return { mode: "full", retentionDays: days };
   return { mode: "degraded_retention", retentionDays: days };
 }
 
-export interface HistoryState { writeCount: number; mode: HistoryMode; retentionDays: number; noticesSent: { [k in HistoryMode]?: number } }
+export interface HistoryState {
+  writeCount: number;
+  mode: HistoryMode;
+  retentionDays: number;
+  noticesSent: { [k in HistoryMode]?: number };
+}
 
-export function newHistoryState(): HistoryState { return { writeCount: 0, mode: "full", retentionDays: 90, noticesSent: {} }; }
+export function newHistoryState(): HistoryState {
+  return { writeCount: 0, mode: "full", retentionDays: 90, noticesSent: {} };
+}
 
 export interface HistoryDeps {
   repo: {
@@ -40,9 +49,19 @@ export interface HistoryDeps {
     cleanupRateLimits(before: number): Promise<number>;
     trimMessagesBelow(idFloor: number): Promise<number>;
     deleteMessagesOlderThan(cutoff: number): Promise<number>;
+    /**
+     * 排序约定：id 降序（最新在前）——performMaintenance 取 rows[rows.length-1].id
+     * 作为第 maxRows 新的 id（裁剪下限），依赖此序，勿改。
+     */
     historyBefore(before: number, limit: number): Promise<{ id: number }[]>;
   };
-  cfg: { maxRows: number; retentionDays: number; presenceTtlMs: number; eventsTtlMs: number; maintenanceEvery: number };
+  cfg: {
+    maxRows: number;
+    retentionDays: number;
+    presenceTtlMs: number;
+    eventsTtlMs: number;
+    maintenanceEvery: number;
+  };
 }
 
 // PG 的 messages.id 为 serial（int4）：不能把 Number.MAX_SAFE_INTEGER 直接作为 `id < ?` 的实参——
@@ -55,7 +74,10 @@ const MAX_ID_BOUND = 2_147_483_647;
  * 顺序：清过期(events/presence/rate_limits) → 按当前档天数删过期消息 → 若仍超行数则裁剪最旧 → 重算档位。
  * 返回新档位与清理量；由调用方决定是否广播 notice（跨实例各自重算、一致收敛）。
  */
-export async function performMaintenance(deps: HistoryDeps, now = Date.now()): Promise<{ mode: HistoryMode; retentionDays: number; deleted: number }> {
+export async function performMaintenance(
+  deps: HistoryDeps,
+  now = Date.now(),
+): Promise<{ mode: HistoryMode; retentionDays: number; deleted: number }> {
   const { repo, cfg } = deps;
   await repo.cleanupEvents(now - cfg.eventsTtlMs);
   await repo.cleanupPresence(now - cfg.presenceTtlMs * 3);

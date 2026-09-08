@@ -9,8 +9,12 @@ export interface StreamRepo {
 }
 
 export interface StreamCfg {
-  pollMs: number; presenceUpsertMs: number; presenceCountMs: number;
-  heartbeatMs: number; presenceTtlMs: number; ip?: string;
+  pollMs: number;
+  presenceUpsertMs: number;
+  presenceCountMs: number;
+  heartbeatMs: number;
+  presenceTtlMs: number;
+  ip?: string;
 }
 export interface StreamOpts {
   repo: StreamRepo;
@@ -23,7 +27,7 @@ export interface StreamOpts {
   emitComment?: (text: string) => void;
 }
 
-const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /** 返回控制柄：start() 进入循环（异步），stop() 请求停止。 */
 export function runStream(o: StreamOpts): { stop: () => void } {
@@ -43,13 +47,20 @@ export function runStream(o: StreamOpts): { stop: () => void } {
       if (since > maxId) since = Math.max(maxId, 0);
       rows = await o.repo.eventsSince(since, 100);
     }
+    let pushed = 0;
     for (const e of rows) {
       since = e.id;
       let data: unknown = {};
-      try { data = JSON.parse(e.payload); } catch { data = { raw: e.payload }; }
+      try {
+        data = JSON.parse(e.payload);
+      } catch {
+        data = { raw: e.payload };
+      }
       o.emit(e.type, data);
+      pushed++;
     }
-    lastSent = Date.now();
+    // 保活记时：仅实际推出事件时刷新；空转轮询不刷 → 空闲超 heartbeatMs 心跳分支才触发
+    if (pushed > 0) lastSent = Date.now();
   };
   // 时间门控：upsert/COUNT 按各自节拍（cfg.presenceUpsertMs / countMs）执行，轮询 tick 只负责 pollMs
   const tickUpsert = async () => {
@@ -63,13 +74,20 @@ export function runStream(o: StreamOpts): { stop: () => void } {
     if (now - lastCount < o.cfg.presenceCountMs) return;
     lastCount = now;
     const online = await o.repo.presenceCount(now - o.cfg.presenceTtlMs);
-    if (online !== lastOnline) { lastOnline = online; o.emit("presence", { online }); }
+    if (online !== lastOnline) {
+      lastOnline = online;
+      o.emit("presence", { online });
+      lastSent = Date.now(); // presence 是实际写出，同样刷新保活记时
+    }
   };
 
   (async () => {
     if (o.cfg.ip) {
       const ban = await o.repo.banGet(o.cfg.ip);
-      if (ban) o.emit("ban", { reason: ban.reason }); // D5：禁言提示，流保持
+      if (ban) {
+        o.emit("ban", { reason: ban.reason }); // D5：禁言提示，流保持
+        lastSent = Date.now();
+      }
     }
     await tickUpsert();
     await tickCount();
@@ -80,15 +98,23 @@ export function runStream(o: StreamOpts): { stop: () => void } {
       await tickPoll();
       if (stopped) break;
       await tickUpsert();
-      if (Date.now() - lastSent >= o.cfg.heartbeatMs) { emitComment("ping"); lastSent = Date.now(); }
+      // 空闲保活：仅当距上次实际写出 ≥ heartbeatMs 才发 ": ping" 注释（lastSent 只在写出时刷新）
+      if (Date.now() - lastSent >= o.cfg.heartbeatMs) {
+        emitComment("ping");
+        lastSent = Date.now();
+      }
       await tickCount();
       const elapsed = Date.now() - cycleStart;
       await sleep(Math.max(o.cfg.pollMs - elapsed, 0)); // 对齐 tick，防 async 堆积
     }
-  })().catch(err => {
+  })().catch((err) => {
     o.emit("error", { code: "db_unavailable", message: String(err) });
     stopped = true;
   });
 
-  return { stop: () => { stopped = true; } };
+  return {
+    stop: () => {
+      stopped = true;
+    },
+  };
 }
