@@ -217,4 +217,43 @@ describe("SSE 事件流", () => {
     await res2.body?.cancel().catch(() => {});
     ctrl.abort();
   });
+
+  test("开流限流：streamPerMin=1 时同 IP 第二条 429（stream 桶接线）", async () => {
+    const { app } = await boot({
+      rate: {
+        msgPerMin: 10,
+        streamPerMin: 1,
+        loginPerMin: 5,
+        windowMs: 60_000,
+      },
+    });
+    const ctrl = new AbortController();
+    const first = await app.request(`/api/stream?client_id=${UUID}`, {
+      headers: { "x-forwarded-for": "6.6.6.6" },
+      signal: ctrl.signal,
+    });
+    expect(first.status).toBe(200); // 首开放行，流建立
+    const second = await app.request(`/api/stream?client_id=${UUID}`, {
+      headers: { "x-forwarded-for": "6.6.6.6" },
+    });
+    expect(second.status).toBe(429); // 同窗口第二条超限（窗口由 rateCheck 对齐，无需真等 60s）
+    const err = await second.json();
+    expect(err.error.code).toBe("rate_limited");
+    expect(err.error.retry_after_ms).toBeGreaterThan(0);
+    await first.body?.cancel().catch(() => {});
+    ctrl.abort();
+  });
+
+  test("禁言 IP 开流：首帧 event: ban（禁言不禁看，流保持）", async () => {
+    const { app, repo } = await boot();
+    await repo.banUpsert("7.7.7.7", "spam", "admin", Date.now());
+    const res = await app.request(`/api/stream?client_id=${UUID}`, {
+      headers: { "x-forwarded-for": "7.7.7.7" },
+    });
+    expect(res.status).toBe(200);
+    const seen = await readSse(res, (type) => type === "ban", 2000);
+    const ban = seen.find((e) => e.type === "ban");
+    expect(ban).toBeDefined();
+    expect(ban?.data.reason).toBe("spam");
+  });
 });

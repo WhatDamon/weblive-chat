@@ -128,6 +128,18 @@ export function registerChat(app: Hono, d: ChatDeps) {
 
   app.get("/api/stream", async (c) => {
     const ip = ipOf(c);
+    // 规格 §6 强制：开流 20 次/min（stream 桶按 IP，仿 POST msg 桶模式）——
+    // 控制者裁定：stream 桶此前悬空（全仓无调用点），开流前检查、超限 429。
+    // 禁言不禁看语义不变：stream 不做 banGet 拦截（禁言提示由 runStream 经 cfg.ip 发 ban 首帧）。
+    try {
+      const rl = await rateCheck(repo, "stream", ip, cfg.rate.streamPerMin);
+      if (!rl.allowed)
+        return jsonError(c, 429, "rate_limited", {
+          retry_after_ms: rl.retryAfterMs,
+        });
+    } catch {
+      return jsonError(c, 503, "db_unavailable");
+    }
     const sinceParam = c.req.query("since");
     const since =
       sinceParam && /^\d+$/.test(sinceParam) ? Number(sinceParam) : 0;
