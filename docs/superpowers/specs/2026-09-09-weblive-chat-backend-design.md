@@ -175,7 +175,7 @@ SSE 事件类型：
 | `message` | `{id, client_id, nick, text, created_at}` | 新消息（含自己发的，按 id 去重） |
 | `delete` | `{id: string}` | 某消息被管理员删除 → 前端替换为占位（字段名与 MessageView.id 一致；早期草稿写作 `{message_id}`，实现收敛为 `{id}`，见 §11） |
 | `presence` | `{online: number}` | 在线**人数**（45s TTL 窗口；按 `client_id` 去重，同浏览器多标签 = 1） |
-| `notice` | `{kind: "history_mode", mode}` | 持久化模式变化（如自动降级到 `ephemeral`）→ 前端可提示 |
+| `notice` | `{kind: "history_mode", mode, retention_days}` | 持久化模式变化（如自动降级到 `ephemeral`；含当前生效保留天数）→ 前端可提示 |
 | `ban` | `{reason}` | 本连接 IP 被**禁言**（仅推给命中 IP 的流）→ 前端提示"你已被禁言"；流保持打开可继续旁观 |
 | `: ping`（注释行） | — | 保活 |
 
@@ -196,11 +196,13 @@ SSE 事件类型：
 
 注：管理端不再提供 `GET /api/admin/messages`（消息查看由公开 `GET /api/messages` 承担，软删标记同样透出）；本表于 T7 落库后按实现契约修订（Ruling B，替换早于 ADMIN_SECRET 决策的陈旧行：`{password}`/12h、`/session → {admin}`、重复封禁 409）。
 
-Cookie 安全：`HttpOnly; SameSite=Lax; Secure`（生产）；`ADMIN_SECRET` 启动时校验（生产缺失/过短即拒绝启动，错误码 `not_configured` 引导部署者）。
+Cookie 安全：`HttpOnly; SameSite=Lax; Secure`（生产）；`ADMIN_SECRET` 在 `NODE_ENV=production` 且未设置时于启动阶段抛错拒绝（仅校验缺失、无长度下限，属启动错误而非 HTTP 响应码）。
 
 ### 5.3 状态码速查
 
-`200/201/204`、`400`（校验失败 code 细分）、`401`（口令错/会话失效）、`403 banned` / `403 origin_not_allowed`（Origin 不在白名单）/ `403 missing_origin`（`REQUIRE_ORIGIN=1` 且请求无 Origin）、`404`、`429`（限流 + `retry_after_ms`）、`500`、`503 not_configured`（缺 DATABASE_URL）、`503 db_unavailable`（存储冻结/不可用，见 §7.2 Neon 语义）。
+`200/201/204`、`400`（校验失败 code 细分）、`401`（口令错/会话失效）、`403 banned` / `403 origin_not_allowed`（Origin 不在白名单）/ `403 missing_origin`（`REQUIRE_ORIGIN=1` 且请求无 Origin）、`404`、`429`（限流 + `retry_after_ms`）、`500`、`503 db_unavailable`（存储冻结/不可用，见 §7.2 Neon 语义）。
+
+> 配置缺失不产生响应码：`DATABASE_URL`（postgres 形态）/`ADMIN_SECRET`（生产）等在启动/构建阶段由 `loadConfig` 直接抛错，无 `503 not_configured`。
 
 ## 6. 防滥用与安全（MVP 基线）
 

@@ -47,7 +47,7 @@
 | `presence` | `{online: number}` | 在线人数（45s TTL 窗口，按 `client_id` 去重） |
 | `notice` | `{kind: "history_mode", mode, retention_days}` | 持久化模式变化（如自动降级到 `ephemeral`） |
 | `ban` | `{reason}` | 本连接 IP 被**禁言**（仅推给命中 IP 的流；流保持、可继续旁观） |
-| `error` | `{code, message}` | 流内 DB 故障等异常（随后停止该流，客户端重连） |
+| `error` | `{code, message}` | 流内 DB 故障等异常：**推送停止但 SSE 连接不主动关闭**（保持至平台超时/客户端断开）——客户端收到即视为流失效并携带 `since` 重连 |
 | `: ping`（注释行，非事件） | — | 空闲约 15s 保活；客户端忽略 |
 
 ### 流与游标语义
@@ -93,7 +93,7 @@
 |---|---|---|
 | 400 | `invalid_body` | 请求体缺失/非 JSON；`before` 与 `since` 同时使用；管理 body 字段非法 |
 | 400 | `invalid_uuid` | `client_id` 不是合法 UUID |
-| 400 | `invalid_cursor` | `id`/`before`/`since`/`limit` 非法（非正整数） |
+| 400 | `invalid_cursor` | `GET /api/messages` 的 `limit` 与 `DELETE /api/admin/messages/:id` 的 `:id` 非纯数字（游标 id 必须是正整数）；**`before`/`since`/SSE `since` 的非法值不报错**——按缺省处理（历史取最近 50 条、流从 0 续传） |
 | 400 | `nick_empty` / `nick_too_long` / `text_empty` / `text_too_long` | 长度/空值校验 |
 | 400 | `banned_word` | 内容命中禁词（子串匹配） |
 | 401 | `invalid_secret` / `unauthorized` | 口令错 / 会话缺失·过期·被篡改 |
