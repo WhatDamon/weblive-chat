@@ -53,10 +53,16 @@ const mapMessage = (r: any): MessageRow => ({
   deleted_at: r.deleted_at === null || r.deleted_at === undefined ? null : Number(r.deleted_at),
 });
 
+/** events 行归一：PG bigint 列返回 string，sqlite INTEGER 返回 number → 两驱动统一收口为 number（与 mapMessage 同策略）。 */
+const mapEvent = (r: any): EventRow => ({
+  id: Number(r.id), type: r.type, payload: r.payload, created_at: Number(r.created_at),
+});
+
 // SQL 模板（仅含 ? 占位；SELECT 后追 RETURNING/双写事务语句按方言微调，见 impl）
 const SQL = {
   insMessage: "INSERT INTO messages (client_id, nick, text, created_at) VALUES (?, ?, ?, ?)",
   insEvent: "INSERT INTO events (type, payload, created_at) VALUES (?, ?, ?)",
+  updEventPayload: "UPDATE events SET payload = ? WHERE id = ?",
   eventsSince: "SELECT * FROM events WHERE id > ? ORDER BY id ASC LIMIT ?",
   maxEventId: "SELECT COALESCE(MAX(id), 0) AS m FROM events",
   before: "SELECT * FROM messages WHERE id < ? ORDER BY id DESC LIMIT ?",
@@ -92,9 +98,9 @@ class SqliteRepo implements Repo {
   async bootstrap(): Promise<void> { for (const d of ddlFor("sqlite")) await this.c.execute(d); }
   async close(): Promise<void> { this.c.close(); }
   private async run<T>(sql: string, args: unknown[]): Promise<T> {
-    // SAFETY: libsql 返回的 Row 列已是 JS 原始类型（number/string/null），与各查询的契约行一一对应；
-    // 调用点按查询用具体行类型（any[] + map/Number 归一）收口，T 仅为免重复声明的泛型。
     const r = await this.c.execute({ sql, args: args as any[] });
+    // SAFETY: libsql 返回的 Row 列已是 JS 原始类型（number/string/null）且与各查询契约行一一对应；
+    // 调用点按查询用行类型（any[] + map/Number 归一）收口，T 仅为免重复声明的泛型，非运行时强制。
     return r.rows as unknown as T;
   }
   private async exec(sql: string, args: unknown[] = []): Promise<void> { await this.c.execute({ sql, args: args as any[] }); }
@@ -121,7 +127,7 @@ class SqliteRepo implements Repo {
       const ev = await tx.execute({ sql: SQL.insEvent, args: ["message", "", m.created_at] });
       const eventId = Number(ev.lastInsertRowid);
       const payload = JSON.stringify({ id: `e${eventId}`, client_id: m.client_id, nick: m.nick, text: m.text, created_at: m.created_at });
-      await tx.execute({ sql: "UPDATE events SET payload = ? WHERE id = ?", args: [payload, eventId] });
+      await tx.execute({ sql: SQL.updEventPayload, args: [payload, eventId] });
       await tx.commit();
       return { eventId };
     } catch (err) {
@@ -133,7 +139,7 @@ class SqliteRepo implements Repo {
     const r = await this.c.execute({ sql: SQL.insEvent, args: [type, payload, created_at] });
     return Number(r.lastInsertRowid);
   }
-  async eventsSince(since: number, limit: number): Promise<EventRow[]> { return this.run<any[]>(SQL.eventsSince, [since, limit]); }
+  async eventsSince(since: number, limit: number): Promise<EventRow[]> { return (await this.run<any[]>(SQL.eventsSince, [since, limit])).map(mapEvent); }
   async eventsMaxId(): Promise<number> { const r = await this.run<any[]>(SQL.maxEventId, []); return Number(r[0]?.m ?? 0); }
   async historyBefore(before: number, limit: number): Promise<MessageRow[]> { return (await this.run<any[]>(SQL.before, [before, limit])).map(mapMessage); }
   async historySince(since: number, limit: number): Promise<MessageRow[]> { return (await this.run<any[]>(SQL.since, [since, limit])).map(mapMessage); }
@@ -187,7 +193,7 @@ class PostgresRepo implements Repo {
   constructor(private sql: postgres.Sql<{}>) {}
   async bootstrap(): Promise<void> { for (const d of ddlFor("postgres")) await this.sql.unsafe(d); }
   async close(): Promise<void> { await this.sql.end(); }
-  private toPgParams(sql: string, args: unknown[]) {
+  private toPgParams(sql: string, args: any[]) {
     let i = 0;
     const converted = sql.replace(/\?/g, () => `$${++i}`);
     return { sql: converted, args };
@@ -196,33 +202,37 @@ class PostgresRepo implements Repo {
     const { sql: s, args: a } = this.toPgParams(sql, args);
     // SAFETY: postgres.js unsafe 返回 RowList（含 count 元数据、按列解出的 JS 值），此处仅做泛型收口；
     // 具体列契约由各查询调用点的行类型（T 为行类型，如 any / { id: number }）保证。
-    return (await this.sql.unsafe(s, a as any[])) as unknown as T[];
+    return (await this.sql.unsafe(s, a)) as unknown as T[];
   }
   private async exec(sql: string, args: unknown[]): Promise<void> {
     const { sql: s, args: a } = this.toPgParams(sql, args);
-    await this.sql.unsafe(s, a as any[]);
+    await this.sql.unsafe(s, a);
   }
   private async countAffected(sql: string, args: unknown[]): Promise<number> {
     const { sql: s, args: a } = this.toPgParams(sql, args);
-    const r = await this.sql.unsafe(s, a as any[]);
+    const r = await this.sql.unsafe(s, a);
     return r.count === undefined ? 0 : Number(r.count);
   }
   async sendMessageAndEvent(m: MessageInput): Promise<{ messageId: number; eventId: number }> {
     return await this.sql.begin(async tx => {
-      const [msg] = await tx.unsafe(`INSERT INTO messages (client_id, nick, text, created_at) VALUES ($1, $2, $3, $4) RETURNING id`, [m.client_id, m.nick, m.text, m.created_at]);
+      const insMsg = this.toPgParams(SQL.insMessage + " RETURNING id", [m.client_id, m.nick, m.text, m.created_at]);
+      const [msg] = await tx.unsafe(insMsg.sql, insMsg.args);
       const messageId = Number(msg.id);
       const payload = JSON.stringify({ id: String(messageId), client_id: m.client_id, nick: m.nick, text: m.text, created_at: m.created_at });
-      const [ev] = await tx.unsafe(`INSERT INTO events (type, payload, created_at) VALUES ($1, $2, $3) RETURNING id`, ["message", payload, m.created_at]);
+      const insEv = this.toPgParams(SQL.insEvent + " RETURNING id", ["message", payload, m.created_at]);
+      const [ev] = await tx.unsafe(insEv.sql, insEv.args);
       return { messageId, eventId: Number(ev.id) };
     });
   }
 
   async publishEphemeralMessage(m: MessageInput): Promise<{ eventId: number }> {
     return await this.sql.begin(async tx => {
-      const [ev] = await tx.unsafe(`INSERT INTO events (type, payload, created_at) VALUES ($1, $2, $3) RETURNING id`, ["message", "", m.created_at]);
+      const insEv = this.toPgParams(SQL.insEvent + " RETURNING id", ["message", "", m.created_at]);
+      const [ev] = await tx.unsafe(insEv.sql, insEv.args);
       const eventId = Number(ev.id);
       const payload = JSON.stringify({ id: `e${eventId}`, client_id: m.client_id, nick: m.nick, text: m.text, created_at: m.created_at });
-      await tx.unsafe(`UPDATE events SET payload = $1 WHERE id = $2`, [payload, eventId]);
+      const upd = this.toPgParams(SQL.updEventPayload, [payload, eventId]);
+      await tx.unsafe(upd.sql, upd.args);
       return { eventId };
     });
   }
@@ -230,7 +240,7 @@ class PostgresRepo implements Repo {
     const r = await this.query<{ id: number }>(SQL.insEvent + " RETURNING id", [type, payload, created_at]);
     return Number(r[0]?.id ?? 0);
   }
-  async eventsSince(since: number, limit: number): Promise<EventRow[]> { return await this.query<EventRow>(SQL.eventsSince, [since, limit]); }
+  async eventsSince(since: number, limit: number): Promise<EventRow[]> { return (await this.query<any>(SQL.eventsSince, [since, limit])).map(mapEvent); }
   async eventsMaxId(): Promise<number> { const r = await this.query<{ m: number | string }>(SQL.maxEventId, []); return Number(r[0]?.m ?? 0); }
   async historyBefore(before: number, limit: number): Promise<MessageRow[]> { return (await this.query<any>(SQL.before, [before, limit])).map(mapMessage); }
   async historySince(since: number, limit: number): Promise<MessageRow[]> { return (await this.query<any>(SQL.since, [since, limit])).map(mapMessage); }

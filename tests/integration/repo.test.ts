@@ -2,6 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { makeRepo } from "../helpers";
 
 describe("Repo 双库契约", () => {
+  // 跨方言安全上界哨兵：PG serial(int4) 不可能超过 int4 上限，sqlite AUTOINCREMENT 实际行数远达不到。
+  // 不能用 Number.MAX_SAFE_INTEGER —— postgres.js 以 oid 0 文本发送数字，PG 按列类型 int4 解析 → 执行期 out of range。
+  const PG_SAFE_MAX_ID = 2_147_483_647;
+
   test("bootstrap 幂等：可重复调用", async () => {
     const { repo, cleanup } = await makeRepo();
     await repo.bootstrap();
@@ -17,7 +21,7 @@ describe("Repo 双库契约", () => {
     );
     expect(messageId).toBeGreaterThan(0);
     expect(eventId).toBeGreaterThan(0);
-    const hist = await repo.historyBefore(Number.MAX_SAFE_INTEGER, 10);
+    const hist = await repo.historyBefore(PG_SAFE_MAX_ID, 10);
     expect(hist).toHaveLength(1);
     expect(hist[0].nick).toBe("甲");
     const evs = await repo.eventsSince(0, 10);
@@ -46,7 +50,10 @@ describe("Repo 双库契约", () => {
     expect(since.map(m => m.text)).toEqual(["m1", "m2"]);
     const ok = await repo.softDeleteMessage(sent[1].messageId, "admin", now + 100);
     expect(ok).toBe(true);
-    const all = await repo.historyBefore(Number.MAX_SAFE_INTEGER, 10);
+    // 幂等：同一行二次软删命中 WHERE deleted_at IS NULL 失败 → 返回 false
+    const okAgain = await repo.softDeleteMessage(sent[1].messageId, "admin", now + 200);
+    expect(okAgain).toBe(false);
+    const all = await repo.historyBefore(PG_SAFE_MAX_ID, 10);
     expect(all.find(m => m.id === sent[1].messageId)).toMatchObject({ text: null, deleted: true });
     await cleanup();
   });
@@ -80,6 +87,25 @@ describe("Repo 双库契约", () => {
     await cleanup();
   });
 
+  test("publishEphemeralMessage 只写 events：payload id=e<id>，messages 不增", async () => {
+    const { repo, cleanup } = await makeRepo();
+    const statsBefore = await repo.messageStats();
+    const now = Date.now();
+    const { eventId } = await repo.publishEphemeralMessage(
+      { client_id: "e1e1e1e1-e1e1-4e1e-8e1e-e1e1e1e1e1e1", nick: "乙", text: "live-only", created_at: now },
+    );
+    expect(eventId).toBeGreaterThan(0);
+    const evs = await repo.eventsSince(0, 10);
+    expect(evs).toHaveLength(1);
+    expect(evs[0].type).toBe("message");
+    expect(evs[0].created_at).toBe(now); // created_at 双驱动归一为 number
+    const pl = JSON.parse(evs[0].payload);
+    expect(pl.id).toBe(`e${eventId}`); // e 前缀避开 messages.id 命名空间
+    expect(pl.text).toBe("live-only");
+    expect((await repo.messageStats()).total).toBe(statsBefore.total); // 不落 messages
+    await cleanup();
+  });
+
   test("清洗与统计：events/presence/rate_limits 过期删除、消息超行数裁剪、day 裁剪", async () => {
     const { repo, cleanup } = await makeRepo();
     await repo.insertEvent("notice", "{}", 1000);
@@ -92,7 +118,7 @@ describe("Repo 双库契约", () => {
     for (let i = 0; i < 5; i++) await repo.sendMessageAndEvent({ client_id: "c", nick: "n", text: `t${i}`, created_at: 1 });
     const stats = await repo.messageStats();
     expect(stats.total).toBe(5);
-    const keep = (await repo.historyBefore(Number.MAX_SAFE_INTEGER, 10))[2].id; // 保留最新的 3 条 → floor 为第 3 新
+    const keep = (await repo.historyBefore(PG_SAFE_MAX_ID, 10))[2].id; // 保留最新的 3 条 → floor 为第 3 新
     await repo.trimMessagesBelow(keep);
     expect((await repo.messageStats()).total).toBe(3);
     await repo.deleteMessagesOlderThan(50); // created_at=1 < 50 → 全删
