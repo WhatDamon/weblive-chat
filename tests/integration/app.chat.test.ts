@@ -1,5 +1,5 @@
 import { describe, expect, test, afterEach } from "bun:test";
-import { makeApp, UUID } from "../helpers";
+import { makeApp, readSse, UUID } from "../helpers";
 
 let cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -179,5 +179,42 @@ describe("chat 公开端点", () => {
     expect(
       JSON.parse(msgEvs[msgEvs.length - 1].payload).id.startsWith("e"),
     ).toBe(true);
+  });
+});
+
+describe("SSE 事件流", () => {
+  test("开流收 presence 初值；POST 后经 events 广播收到 message", async () => {
+    const { app } = await boot();
+    const ctrl = new AbortController();
+    const res = await app.request(`/api/stream?client_id=${UUID}`, {
+      headers: { "x-forwarded-for": "1.1.1.1" },
+      signal: ctrl.signal,
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/event-stream");
+    // 另开同 client_id 连接：presence 按 client_id 去重，多标签并发不破坏计数
+    const res2 = await app.request(`/api/stream?client_id=${UUID}`, {
+      headers: { "x-forwarded-for": "2.2.2.2" },
+    });
+    const post = await app.request("/api/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-forwarded-for": "1.1.1.1",
+      },
+      body: JSON.stringify({ client_id: UUID, nick: "甲", text: "流广播" }),
+    });
+    expect(post.status).toBe(201);
+    // 单次 readSse 读到 message 广播为止（命中即 cancel，单次消费语义）；
+    // presence 初值在开流瞬间已发出，会先于 message 缓冲在同一 out 中
+    const seen = await readSse(
+      res,
+      (type, data) => type === "message" && data.text === "流广播",
+      3000,
+    );
+    expect(seen.some((e) => e.type === "presence")).toBe(true);
+    expect(seen.some((e) => e.type === "message")).toBe(true);
+    await res2.body?.cancel().catch(() => {});
+    ctrl.abort();
   });
 });

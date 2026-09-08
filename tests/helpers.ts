@@ -77,3 +77,43 @@ export async function makeApp(over: Partial<AppConfig> = {}) {
 }
 
 export const UUID = "11111111-2222-4333-8444-555555555555";
+
+/**
+ * 读取 SSE 响应直到 waitFor 命中（命中即 cancel 流，单次消费语义）。
+ * 只收 data 帧（SSE 注释行如 ": ping" 无 data: 前缀，data 为 null 不 push，也不触发 waitFor）。
+ */
+export async function readSse(
+  res: Response,
+  waitFor: (type: string, data: any) => boolean,
+  timeoutMs = 3000,
+): Promise<{ type: string; data: any }[]> {
+  const out: { type: string; data: any }[] = [];
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf("\n\n")) >= 0) {
+      const block = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      const lines = block.split("\n");
+      let type = "message";
+      let data: any = null;
+      for (const line of lines) {
+        if (line.startsWith("event:")) type = line.slice(6).trim();
+        else if (line.startsWith("data:")) data = JSON.parse(line.slice(5).trim());
+      }
+      if (data !== null) out.push({ type, data });
+      if (waitFor(type, data)) {
+        await reader.cancel().catch(() => {});
+        return out;
+      }
+    }
+  }
+  await reader.cancel().catch(() => {});
+  return out;
+}

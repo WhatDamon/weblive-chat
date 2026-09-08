@@ -3,8 +3,9 @@ import type { AppConfig } from "../lib/config";
 import type { Repo } from "../lib/repo";
 import { MAX_ID_BOUND, type HistoryMode } from "../lib/history";
 import { clientIpFromHeaders } from "../lib/security";
-import { validateMessageBody } from "../lib/validate";
+import { validateMessageBody, validUuid } from "../lib/validate";
 import { rateCheck } from "../lib/limits";
+import { runStream } from "../lib/stream";
 import { parseIdParam, jsonError, readJson } from "../lib/http";
 
 export interface ChatDeps {
@@ -123,5 +124,51 @@ export function registerChat(app: Hono, d: ChatDeps) {
     } catch {
       return jsonError(c, 503, "db_unavailable");
     }
+  });
+
+  app.get("/api/stream", async (c) => {
+    const ip = ipOf(c);
+    const sinceParam = c.req.query("since");
+    const since =
+      sinceParam && /^\d+$/.test(sinceParam) ? Number(sinceParam) : 0;
+    const clientParam = c.req.query("client_id");
+    const clientId =
+      clientParam && validUuid(clientParam)
+        ? clientParam
+        : `anon-${crypto.randomUUID()}`;
+    // 动态 import：仅流请求路径加载 hono/streaming（其余请求零开销）
+    const { streamSSE } = await import("hono/streaming");
+    return streamSSE(c, async (stream) => {
+      // ip 在 StreamCfg（账本 seam）：runStream 经 cfg.ip → repo.banGet 做禁言提示
+      const ctrl = runStream({
+        repo,
+        cfg: {
+          pollMs: cfg.pollMs,
+          presenceUpsertMs: cfg.presenceUpsertMs,
+          presenceCountMs: cfg.presenceCountMs,
+          heartbeatMs: cfg.heartbeatMs,
+          presenceTtlMs: cfg.presenceTtlMs,
+          ip,
+        },
+        clientId,
+        since,
+        emit: (type, data) => {
+          stream.writeSSE({ event: type, data: JSON.stringify(data) });
+        },
+        // 心跳已由 runStream 按 heartbeatMs 经注释行保活（非 data 帧，客户端忽略）
+        emitComment: () => {
+          stream.write(": ping\n\n");
+        },
+      });
+      // 简报硬伤 + Ruling：hono 4.13.7 的 SSEStreamingApi.aborted 是布尔不是
+      // Promise，直接 await 会秒回并触发 run() finally close 关流；改为挂 onAbort
+      // 回调 stop 控制器并 resolve，回调挂起到客户端断开才返回。
+      await new Promise<void>((resolve) => {
+        stream.onAbort(() => {
+          ctrl.stop();
+          resolve();
+        });
+      });
+    });
   });
 }
