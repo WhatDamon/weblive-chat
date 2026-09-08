@@ -44,9 +44,10 @@
 | D10 | 存储超限**自动降级**：历史持久化与实时广播解耦，必要时停写历史、仅实时（§7.2） | 免费额度耗尽应"降级保活"而非静默丢消息 |
 | D11 | 可移植性规则（§4.1）：整数自增主键 + TEXT 载荷 + **时间一律 epoch ms 整数、应用层算好传参**，SQL 层禁方言写法（`now()`/`interval`/JSONB 等） | 否则换库要改代码；"跨方言子集 + 显式 provider"是复用的根基 |
 | D12 | 可选**来源白名单**：`ALLOWED_ORIGINS` 未设置 = 开放（CORS `*`）；设置后 fail-closed（不在名单的跨源请求 `403 origin_not_allowed`）；无 Origin 直连默认放行，`REQUIRE_ORIGIN=1` 可收紧（§6.1） | 防第三方站点套壳/跨站借力；明确其**非认证**，强制手段仍靠封禁 + 限流 |
-| D13 | 建表 = **启动幂等自建**：`DB_MIGRATE_ON_BOOT`（默认开）首次请求前 `CREATE TABLE IF NOT EXISTS`；schema 演进期后由 Drizzle 迁移文件接管 | "直接部署到 Vercel" 零手动步骤；当前 schema 小，自建表足够 |
+| D13 | 建表 = **启动幂等自建**：`DB_MIGRATE_ON_BOOT`（默认开）首次请求前 `CREATE TABLE IF NOT EXISTS`；schema 演进期后再引入版本化 SQL 迁移 | "直接部署到 Vercel" 零手动步骤；当前 schema 小，自建表足够 |
 | D14 | 历史回溯默认**全量开放**（可翻页）；`HISTORY_MAX_BACKFILL` 可限回溯深度/关闭（0=不限制）。免登录下历史 = 公开存档，README 明示合规风险 | 开箱即用（新访客补上下文）；部署者按需收紧 |
 | D15 | 内置**零构建验证 Demo**（同源 `public/demo.html`，随本 Vercel 项目部署，兼作 API 契约参考客户端）；`/api/meta` 暴露 `client_ip` 供一键自封自测 | 同源免 CORS、部署后即可线上自测 SSE+DB；参考客户端示范 since 重连/补齐；meta 加 `client_ip` 是本期唯一契约扩展 |
+| D16 | 存储层 = **手写可移植 SQL 仓库**（本期不引 ORM）：跨方言 SQL 子集 + 按 provider 维护的幂等 DDL（`lib/ddl.ts`/`lib/repo.ts`）；数据模型增加第 5 表 `rate_limits` 支撑原子限流计数 | 依赖最少，file:sqlite / Postgres 同一套集成用例双跑最稳；Serverless 无共享内存，限流计数必须落库原子自增（§4） |
 
 ## 3. 架构与数据流
 
@@ -82,12 +83,12 @@
 
 ## 4. 数据模型
 
-**可移植性约定**：主键为整数自增（Drizzle 按方言映射：PG `serial` / SQLite `INTEGER PRIMARY KEY AUTOINCREMENT`，在保留上限内数值远小于 2³¹）；所有 JSON 中的 `id`/游标一律序列化为**字符串**；时间一律存 **epoch 毫秒整数**、由应用层计算与传参，SQL 层不出现 `now()`/`interval`/时间类型函数（详见 §4.1）。
+**可移植性约定**：主键为整数自增（由 provider 专属 DDL 体现：PG `serial` / SQLite `INTEGER PRIMARY KEY AUTOINCREMENT`，在保留上限内数值远小于 2³¹）；所有 JSON 中的 `id`/游标一律序列化为**字符串**；时间一律存 **epoch 毫秒整数**、由应用层计算与传参，SQL 层不出现 `now()`/`interval`/时间类型函数（详见 §4.1）。
 
 ```sql
 -- 消息（历史主表，滚动保留）
 messages (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT, -- 单调游标（Drizzle 映射：PG serial）
+  id         INTEGER PRIMARY KEY AUTOINCREMENT, -- 单调游标（SQLite DDL；PG 用 serial）
   client_id  TEXT        NOT NULL,              -- UUID 字符串（格式应用层校验）
   nick       TEXT        NOT NULL,
   text       TEXT        NOT NULL,              -- 纯文本，服务端仅做 trim/控制符清洗
@@ -119,9 +120,20 @@ bans (
   banned_by  TEXT NOT NULL,
   created_at INTEGER NOT NULL               -- epoch ms
 );
+
+-- 限流计数（每 IP × 桶 × 固定窗口；原子自增，过期行随清洗删除）
+rate_limits (
+  bucket       TEXT NOT NULL,          -- msg | stream | login
+  scope        TEXT NOT NULL,          -- 规范化 IP
+  window_start INTEGER NOT NULL,       -- 窗口起点 epoch ms（应用层按 60s 对齐）
+  count        INTEGER NOT NULL,
+  PRIMARY KEY (bucket, scope, window_start)
+);
 ```
 
-迁移/建表：**启动幂等自建**（D13）——`DB_MIGRATE_ON_BOOT`（默认开）首次请求前 `CREATE TABLE IF NOT EXISTS`；schema 演进期后由 Drizzle 迁移文件（`bun run db:migrate`）接管。
+> presence 行 TTL 过期后**不自动删除**（每 client 一行、upsert 覆盖）；清洗节点顺带删除 `last_seen` 早于 TTL 数倍的过期行，防离线 client 累积（§7.2）。
+
+迁移/建表：**启动幂等自建**（D13）——`DB_MIGRATE_ON_BOOT`（默认开）首次请求前执行 `CREATE TABLE IF NOT EXISTS`；表定义见 §9 `lib/ddl.ts`（按 provider 维护，本实现期不引入 ORM，见 D16）；schema 演进期后再引入版本化 SQL 迁移（`bun run db:migrate`）。
 
 ### 4.1 Provider 矩阵与可移植性规则
 
@@ -137,10 +149,10 @@ bans (
 
 **可移植性规则**（D11）：
 
-1. 主键一律整数自增，由 Drizzle 按方言映射（PG `serial` / SQLite `INTEGER PRIMARY KEY AUTOINCREMENT`），**不在 schema 里写 `bigserial`/`BIGSERIAL`**。
+1. 主键一律整数自增，由 provider 专属 DDL 体现（PG `serial` / SQLite `INTEGER PRIMARY KEY AUTOINCREMENT`），**不写 `bigserial`/`BIGSERIAL`**。
 2. 字符串列一律 `TEXT`（`client_id` 的 UUID 格式在应用层校验）；结构化载荷一律 `TEXT` 存 JSON 字符串（从不查询内部，无需 JSONB）。
 3. 时间一律 **epoch ms 整数**：写入时应用层取 `Date.now()`，比较（presence TTL、保留清理）由应用层算好边界再以参数传入；SQL 层禁止 `now()`/`interval`/方言时间函数。ISO 8601 格式化在应用层输出。
-4. 换 provider = 改 `DB_PROVIDER` + `DATABASE_URL` 并跑一次迁移，**业务与 API 契约代码零改动**；此约束纳入 §8 测试矩阵（同一套用例双库跑）。
+4. 换 provider = 改 `DB_PROVIDER` + `DATABASE_URL`，启动时自动重建表（D13）——**业务与 API 契约代码零改动**；此约束纳入 §8 测试矩阵（同一套用例双库跑）。
 
 ## 5. API 契约 v0.1（草案）
 
@@ -282,26 +294,27 @@ src/
   index.ts            # Hono app（本地 serve + Vercel handler 双入口）
   routes/chat.ts      # 公开端点 + SSE 事件流
   routes/admin.ts     # 管理 JSON API
-  routes/admin-ui.ts  # 内置 /admin 静态页
-  lib/storage.ts      # 按 DB_PROVIDER 选 driver（file:sqlite / libsql / postgres）
-  lib/schema.ts migrate.ts   # Drizzle schema（跨方言子集）+ 迁移
-  lib/security.ts     # 口令、签名 Cookie、IP 解析
-  lib/limits.ts       # 限流桶、校验、禁词
+  routes/pages.ts     # 同源静态页：/demo.html、/admin、/ → /demo.html
+  lib/config.ts       # 环境变量加载/校验/默认值（全部旋钮）
+  lib/ddl.ts          # 按 provider 维护的幂等建表 DDL（sqlite / pg 两套）
+  lib/repo.ts         # 手写可移植 SQL 数据访问层（方言差异隔离；含事务双写与引导）
+  lib/security.ts     # 口令、签名 Cookie、IP 解析、来源白名单
+  lib/validate.ts     # 昵称/文本清洗、UUID、禁词、长度与游标解析
+  lib/limits.ts       # 限流判定（配 repo.rateHit 原子计数）
   lib/history.ts      # 保留策略 + 自动收缩/降级（§7.2）
-  lib/stream.ts       # 事件流循环（可替换总线）
+  lib/stream.ts       # 事件流控制器（轮询/游标回退/presence 广播，可单测）
 public/demo.html      # 验证 Demo（零构建、同源，兼作 API 契约参考客户端）
 public/admin.html     # 管理页（零构建）
-drizzle/              # SQL 迁移
+scripts/              # 演进期启用：版本化 SQL 迁移（本期不引 ORM，见 D16）
 .env.example（含 DB_PROVIDER、三种 URL、ALLOWED_ORIGINS、DB_MIGRATE_ON_BOOT、HISTORY_MAX_BACKFILL 示例）  vercel.json  docs/api.md(实现期由本规格提取)
 tests/                # bun test（单元为主）
 ```
 
 ## 10. 待实现期确认的技术细节（非契约）
 
-- SSE 在 Vercel 的实测验证：官方文档 Hobby 默认/最大时长均为 300s（fluid compute），验证空闲不提前断流、断点重连与 presence TTL 衔接。
-- Drizzle 跨方言 DDL 实测：自增主键（PG `serial` / SQLite `INTEGER PRIMARY KEY AUTOINCREMENT`）与启动幂等建表（`CREATE TABLE IF NOT EXISTS` 双方言均支持）的产物；schema 演进再引入迁移文件。
-- 发消息的 events + messages 双写须在同一事务内（SQLite/PG 均支持），失败整体回滚。
-- `@libsql/client`（file/libsql）与 PG 驱动（`postgres.js` 或 `pg`）在 Bun/Node 双运行时的行为；本地 `file:` 与远端 Turso 的一致性。
-- "平均行字节"估算与保留行数统计的实现成本（采样/`COUNT`），避免每次写入全表扫描。
-- 清洗与模式评估的触发阈值（初定每 ~100 次写入评估一次）。
-- 静态页随函数部署：`/demo.html`、`/admin.html` 由 Hono 同进程读取 `public/` 提供（同源）；Vercel 上需在 `vercel.json` 配 `functions[].includeFiles` 含 `public/**` 将其打进函数文件系统（实现期验证）。
+- SSE 在 Vercel 实测：官方文档 Hobby 默认/最大时长均 300s（fluid compute），验证空闲不提前断流、断点重连与 presence TTL 衔接。
+- 单函数部署形态实测：`src/index.ts` 默认导出 `handle(app)`（hono/node-serverless）承接全部路由，`vercel.json` 用 `builds` + `@vercel/node`；本地 Bun.serve 同进程跑同一 app。
+- 驱动实测：`@libsql/client`（file: 与 libsql://）与 `postgres.js` 在 Bun/Node 双运行时行为；本地 `file:` 与远端 Turso 的一致性。
+- 发消息 events + messages 双写须在同一事务内（SQLite batch / PG begin），失败整体回滚。
+- "平均行字节"估算与保留行数统计的实现成本（`COUNT` 每 ~100 次写入评估一次），避免每次写入全表扫描。
+- 静态页随函数部署：`/demo.html`、`/admin` 由 Hono 同进程读取 `public/` 提供（同源）；Vercel 上将 `public/**` 打进函数文件系统（实现期验证）。
