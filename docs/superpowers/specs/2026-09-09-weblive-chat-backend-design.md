@@ -67,7 +67,7 @@
 1. 打开校验：IP 被封 → 推 `ban` 事件并关闭；登记 presence（upsert `last_seen`）。
 2. 每 ~1s：`SELECT * FROM events WHERE id > since ORDER BY id LIMIT 100` → 按类型推送；成功后游标前移。兜底重连由**客户端**用 `since` 完成。
 3. 每 ~10s：upsert 自身 presence（TTL 45s，超时即视为离线）。
-4. 每 ~5s：`SELECT COUNT(*) FROM presence WHERE last_seen > now() - 45s` → 推 `presence` 事件。
+4. 每 ~5s：`SELECT COUNT(*) FROM presence WHERE last_seen > :cutoff`（cutoff = 当前 epoch ms − 45s，应用层算好）→ 推 `presence` 事件。
 5. 推送间隔内发送 SSE 注释行（`: ping`）保活。
 6. 关闭/异常时删除或令自身 presence 行过期（靠 TTL，不依赖优雅关闭）。
 
