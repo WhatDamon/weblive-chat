@@ -185,21 +185,22 @@ SSE 事件类型：
 
 | 端点 | 说明 |
 |---|---|
-| `POST /api/admin/login` | body `{password}`；成功 → 置 `wl_admin` HttpOnly Cookie（HMAC 签名，默认 12h） |
-| `GET /api/admin/session` | 校验 Cookie → `{admin: true}` |
+| `POST /api/admin/login` | body `{secret}`（对照 `ADMIN_SECRET`）；成功 → 置 `wl_admin` HttpOnly Cookie（HMAC 签名，有效 `ADMIN_SESSION_DAYS` 默认 7d）；失败/超限 `401 invalid_secret` / `429 rate_limited`（登录限流 `LOGIN_RATE_PER_MIN=5`） |
+| `GET /api/admin/me` | 校验 Cookie → `{authed: true}`（会话鉴权守卫，未认证/过期统一 `401 unauthorized`） |
 | `POST /api/admin/logout` | 清除 Cookie |
-| `GET /api/admin/bans?limit&offset` | 封禁列表（倒序，可翻页） |
-| `POST /api/admin/bans` | body `{ip, reason}` → 创建；重复返回 `409` |
-| `DELETE /api/admin/bans/:ip` | 解封 |
-| `GET /api/admin/messages?before&limit` | 查看消息（含已软删标记） |
-| `DELETE /api/admin/messages/:id` | 软删 → 写 `delete` 出站事件 |
-| `GET /api/admin/stats` | `{online, messages_total, messages_retained, history: {mode, retention_days, estimate_bytes}}` —— 暴露存储用量与当前持久化模式，超限前给预警 |
+| `GET /api/admin/bans?limit&offset` | 封禁列表（created_at 倒序，可翻页，limit 1..500） |
+| `POST /api/admin/bans` | body `{ip, reason}` → 新增/覆盖；幂等 upsert：重复 → `200 {created: false}`（created 标志由 repo 双驱动返回，无 409） |
+| `DELETE /api/admin/bans/:ip` | 解封（204/404） |
+| `DELETE /api/admin/messages/:id` | 软删（占位行保留、text 清空、`deleted_by='admin'` 固定标识、不存操作者 IP）→ 写 `delete` 出站事件（payload 仅 `{id}`） |
+| `GET /api/admin/stats` | `{online, messages_total, messages_retained, history: {mode, retention_days, estimate_bytes}}` —— 暴露存储用量与当前持久化模式，超限前给预警；读取时顺带触发维护刷新档位（借维护节拍，写/读共用同一计数器） |
+
+注：管理端不再提供 `GET /api/admin/messages`（消息查看由公开 `GET /api/messages` 承担，软删标记同样透出）；本表于 T7 落库后按实现契约修订（Ruling B，替换早于 ADMIN_SECRET 决策的陈旧行：`{password}`/12h、`/session → {admin}`、重复封禁 409）。
 
 Cookie 安全：`HttpOnly; SameSite=Lax; Secure`（生产）；`ADMIN_SECRET` 启动时校验（生产缺失/过短即拒绝启动，错误码 `not_configured` 引导部署者）。
 
 ### 5.3 状态码速查
 
-`200/201/204`、`400`（校验失败 code 细分）、`401`（口令错/会话失效）、`403 banned` / `403 origin_not_allowed`（Origin 不在白名单）/ `403 missing_origin`（`REQUIRE_ORIGIN=1` 且请求无 Origin）、`404`、`409`（重复封禁）、`429`（限流 + `retry_after_ms`）、`500`、`503 not_configured`（缺 DATABASE_URL）、`503 db_unavailable`（存储冻结/不可用，见 §7.2 Neon 语义）。
+`200/201/204`、`400`（校验失败 code 细分）、`401`（口令错/会话失效）、`403 banned` / `403 origin_not_allowed`（Origin 不在白名单）/ `403 missing_origin`（`REQUIRE_ORIGIN=1` 且请求无 Origin）、`404`、`429`（限流 + `retry_after_ms`）、`500`、`503 not_configured`（缺 DATABASE_URL）、`503 db_unavailable`（存储冻结/不可用，见 §7.2 Neon 语义）。
 
 ## 6. 防滥用与安全（MVP 基线）
 
