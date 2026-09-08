@@ -49,7 +49,7 @@
   </div>
 
   <div class="card">
-    <ul id="messages"><li class="muted">加载历史…</li></ul>
+    <ul id="messages"></ul>
   </div>
 
   <details class="card">
@@ -82,10 +82,26 @@ const cid = store.get("wl.client") || (() => { const id = crypto.randomUUID(); s
 $("nick").value = store.get("wl.nick") || "";
 $("nick").addEventListener("input", () => store.set("wl.nick", $("nick").value.trim()));
 
+const listEl = $("messages");
 const seen = new Map();          // id → li（跨历史/实时去重，消息 id 字符串键）
 let esClosed = false;            // 顶部声明（connect 循环读）
-// 注意：历史接口倒序（新→旧）且 SSE 数字水位无法跳过旧消息，重叠去重统一走 seen Map
-//（数字/"e前缀" 直播 id 一律入 Map；数字水位法在此会误删历史旧消息，故不采用）
+// 去重与游标分工：渲染去重统一走 seen Map（数字与 "e前缀" 直播 id 一律入 Map；数字水位
+// 渲染跳过会误删历史旧消息，故不采用）；since 仅作重连续传下界（见 handleBlock），只在
+// message/delete 事件命中纯数字 id 时单调推进，与渲染去重互不干扰。
+
+const NOTE = "placeholder";
+// 空态提示占位（单个 muted li，仅在列表无真消息时存在；首个真消息到达即移除）
+function setNote(text) {
+  let p = listEl.querySelector("." + NOTE);
+  if (text == null) { if (p) p.remove(); return; }
+  if (!p) {
+    const li = document.createElement("li");
+    li.className = "muted " + NOTE;
+    listEl.append(li);
+    p = li;
+  }
+  p.textContent = text;
+}
 
 const timeOf = (t) => { const d = new Date(typeof t === "number" ? t : t); return isNaN(d) ? "" : " " + d.toLocaleTimeString(); };
 const notice = (msg, isErr) => { const n = $("notice"); n.textContent = msg; n.className = isErr ? "err" : ""; };
@@ -94,6 +110,7 @@ const setStatus = (text, cls) => { const s = $("status"); s.textContent = text; 
 function renderMessage(p) {
   if (seen.has(p.id)) return;
   const li = document.createElement("li");
+  li.dataset.at = String(p.created_at); // 供实时 delete 事件重建占位时复用时间戳
   const ts = document.createElement("span");
   ts.className = "muted";
   ts.textContent = timeOf(p.created_at);
@@ -110,32 +127,40 @@ function renderMessage(p) {
     li.append(who, body, ts);
   }
   seen.set(p.id, li);
-  const list = $("messages");
-  const firstMsg = list.querySelector("li:not(.muted)");
-  if (firstMsg) list.insertBefore(li, firstMsg); // 新消息置顶（历史倒序渲染）
-  else list.prepend(li);
-  while (list.children.length > 200) list.lastChild.remove(); // 防长会话 DOM 膨胀
+  if (listEl.querySelector("." + NOTE)) setNote(null); // 首个真消息到达即清空提示占位
+  listEl.prepend(li);   // 统一时间线「新在上、旧在下」：历史与实时都前插
+  while (listEl.children.length > 200) listEl.lastChild.remove(); // 修剪最旧（底部）
+}
+
+// 实时软删（delete 事件，服务端 payload {id}）：命中节点重建为「（已删除）」占位，无需刷新
+function markDeleted(id) {
+  const li = seen.get(String(id));
+  if (!li) return;
+  const at = timeOf(li.dataset.at);
+  li.textContent = "";
+  const d = document.createElement("span");
+  d.className = "del";
+  d.textContent = "（已删除）";
+  li.append(d);
+  if (at) {
+    const ts = document.createElement("span");
+    ts.className = "muted";
+    ts.textContent = at;
+    li.append(ts);
+  }
 }
 
 async function loadHistory() {
+  setNote("加载历史…");
   try {
     const j = await fetch("/api/messages?limit=50").then((r) => r.json());
-    if (j.mode === "ephemeral") {
-      $("messages").textContent = "";
-      const li = document.createElement("li");
-      li.className = "muted";
-      li.textContent = "（仅实时模式：历史已停止写入，以下为实时广播）";
-      $("messages").append(li);
-    }
-    // 历史倒序（新→旧）：末尾为最旧，逐条前插保证页面上新在下/旧在上无需翻转
-    for (const m of j.messages) renderMessage(m);
-    if (!j.messages.length) {
-      const li = document.createElement("li");
-      li.className = "muted";
-      li.textContent = "（暂无消息，发一条试试）";
-      $("messages").append(li);
-    }
-  } catch { /* 网络/JSON 错误静默，等 SSE 侧自行恢复 */ }
+    // 时间线约定「新在上、旧在下」：API 返回新→旧，逐个前插会排成旧在上 → 先逆转为旧→新再前插
+    const msgs = j.messages.slice().reverse();
+    for (const m of msgs) renderMessage(m);
+    if (j.mode === "ephemeral") setNote("（仅实时模式：历史已停止写入，以下为实时广播）");
+    else if (!msgs.length) setNote("（暂无消息，发一条试试）");
+    else setNote(null);
+  } catch { setNote(null); /* 网络/JSON 错误静默，等 SSE 侧自行恢复 */ }
 }
 
 async function send() {
@@ -163,7 +188,7 @@ async function send() {
 }
 
 // —— 手写 SSE 读取器：契约重连示范（断线固定 1s；since 续传游标）——
-let since = 0; // 顶部已声明 esClosed（同作用域不可重复 let）
+let since = 0; // SSE 续传游标：0 = 从头开始；由 handleBlock 的 bumpSince 单调推进（见下）
 async function connect() {
   while (!esClosed) {
     setStatus("connecting…");
@@ -203,6 +228,10 @@ function handleBlock(block) {
   if (data === null) return; // ": ping" 等注释帧无 data，忽略
   if (type === "message" && data && data.id !== undefined) {
     renderMessage(data);
+    bumpSince(data.id);
+  } else if (type === "delete" && data && data.id !== undefined) {
+    markDeleted(data.id);
+    bumpSince(data.id);
   } else if (type === "presence" && data) {
     $("online").textContent = String(data.online);
   } else if (type === "ban") {
@@ -213,6 +242,13 @@ function handleBlock(block) {
   } else if (type === "error") {
     notice("流错误：" + ((data && data.message) || JSON.stringify(data)), true);
   }
+}
+
+// 纯数字 id 才算续传下界（跳过 "e<eventId>" 直播 id）：since 单调推进，方向安全——since 是
+// 保守下界，重连重复回放由 seen Map 去重吸收、不会丢事件；runStream 对过期游标还有回退保护。
+function bumpSince(id) {
+  const n = Number(id);
+  if (Number.isInteger(n) && n > since) since = n;
 }
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
