@@ -22,5 +22,8 @@ npm-debug.log*
 # Test / coverage
 coverage/
 
+# Local dev database (SQLite)
+data/
+
 # local worktrees
 .worktrees/

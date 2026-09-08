@@ -8,8 +8,20 @@
   "engines": {
     "bun": ">=1.2"
   },
-  "scripts": {},
+  "scripts": {
+    "dev": "bun --hot src/index.ts",
+    "start": "bun src/index.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "test:pg": "DB_PROVIDER=postgres bun test tests/integration"
+  },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.18.0",
+    "hono": "^4.13.7",
+    "postgres": "^3.4.9"
   }
 }
