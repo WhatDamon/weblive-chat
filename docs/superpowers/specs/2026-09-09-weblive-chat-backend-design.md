@@ -2,7 +2,7 @@
 
 - 日期：2026-09-09
 - 状态：待审查（draft）
-- 范围：后端服务 + API 契约 v0.1（不含前端应用，前端将依据本文档的契约接入）
+- 范围：后端服务 + API 契约 v0.1 + 内置**零构建验证 Demo**（`public/demo.html`，同仓同 Vercel 项目、同源部署，兼作契约参考客户端）；完整前端应用不在本期，前端将依据本文档的契约接入
 
 ## 1. 产品目标与约束
 
@@ -22,6 +22,7 @@
 - 基础防滥用：限流、昵称/消息长度上限、可配置禁词
 - 历史滚动保留（可配置）
 - 存储超限时**自动收缩保留期 / 降级为仅实时模式**（§7.2）
+- 内置**验证 Demo**：`/demo.html`（零构建原生、同源）——昵称收发、历史加载、在线人数、断线自动重连；显示自身 IP + 一键自封（验证禁言/限流即时生效）
 
 ### 1.2 非目标（明确不做，防范围蔓延）
 
@@ -45,6 +46,7 @@
 | D12 | 可选**来源白名单**：`ALLOWED_ORIGINS` 未设置 = 开放（CORS `*`）；设置后 fail-closed（不在名单的跨源请求 `403 origin_not_allowed`）；无 Origin 直连默认放行，`REQUIRE_ORIGIN=1` 可收紧（§6.1） | 防第三方站点套壳/跨站借力；明确其**非认证**，强制手段仍靠封禁 + 限流 |
 | D13 | 建表 = **启动幂等自建**：`DB_MIGRATE_ON_BOOT`（默认开）首次请求前 `CREATE TABLE IF NOT EXISTS`；schema 演进期后由 Drizzle 迁移文件接管 | "直接部署到 Vercel" 零手动步骤；当前 schema 小，自建表足够 |
 | D14 | 历史回溯默认**全量开放**（可翻页）；`HISTORY_MAX_BACKFILL` 可限回溯深度/关闭（0=不限制）。免登录下历史 = 公开存档，README 明示合规风险 | 开箱即用（新访客补上下文）；部署者按需收紧 |
+| D15 | 内置**零构建验证 Demo**（同源 `public/demo.html`，随本 Vercel 项目部署，兼作 API 契约参考客户端）；`/api/meta` 暴露 `client_ip` 供一键自封自测 | 同源免 CORS、部署后即可线上自测 SSE+DB；参考客户端示范 since 重连/补齐；meta 加 `client_ip` 是本期唯一契约扩展 |
 
 ## 3. 架构与数据流
 
@@ -148,7 +150,7 @@ bans (
 
 | 端点 | 说明 |
 |---|---|
-| `GET /api/meta` | 轻量配置：`{limits:{nick_max,text_max,retention_days}, presence:{ttl_s}}`（无 DB 依赖，供前端校验与展示） |
+| `GET /api/meta` | 轻量配置：`{limits:{nick_max,text_max,retention_days}, presence:{ttl_s}, client_ip}`（无 DB 依赖；`client_ip` = 服务端视角当前请求 IP、已规范化，供 demo/前端自测展示） |
 | `GET /api/messages?before=<id>&limit=50` | 历史回溯，newest-first，默认最近 50（≤200）；回溯深度默认全量，`HISTORY_MAX_BACKFILL` 可限深/关闭；软删消息返回占位；`ephemeral` 模式返回 `{messages: [], mode: "ephemeral"}` |
 | `GET /api/messages?since=<id>&limit=200` | 增量补齐（gap-sync，oldest-first；与事件流事件去重由客户端按 id 处理） |
 | `POST /api/messages` | body `{client_id, nick, text}` → `201 {id, created_at}`；`403 banned`（含 reason）／`429`／`400` |
@@ -287,6 +289,7 @@ src/
   lib/limits.ts       # 限流桶、校验、禁词
   lib/history.ts      # 保留策略 + 自动收缩/降级（§7.2）
   lib/stream.ts       # 事件流循环（可替换总线）
+public/demo.html      # 验证 Demo（零构建、同源，兼作 API 契约参考客户端）
 public/admin.html     # 管理页（零构建）
 drizzle/              # SQL 迁移
 .env.example（含 DB_PROVIDER、三种 URL、ALLOWED_ORIGINS、DB_MIGRATE_ON_BOOT、HISTORY_MAX_BACKFILL 示例）  vercel.json  docs/api.md(实现期由本规格提取)
@@ -301,3 +304,4 @@ tests/                # bun test（单元为主）
 - `@libsql/client`（file/libsql）与 PG 驱动（`postgres.js` 或 `pg`）在 Bun/Node 双运行时的行为；本地 `file:` 与远端 Turso 的一致性。
 - "平均行字节"估算与保留行数统计的实现成本（采样/`COUNT`），避免每次写入全表扫描。
 - 清洗与模式评估的触发阈值（初定每 ~100 次写入评估一次）。
+- 静态页随函数部署：`/demo.html`、`/admin.html` 由 Hono 同进程读取 `public/` 提供（同源）；Vercel 上需在 `vercel.json` 配 `functions[].includeFiles` 含 `public/**` 将其打进函数文件系统（实现期验证）。
