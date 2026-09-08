@@ -31,7 +31,7 @@
 
 | # | 决策 | 理由 |
 |---|------|------|
-| D1 | 持久化默认 **Turso/libSQL**（`@libsql/client`，5 GB / 5 亿行读 / 1000 万行写/月，**无 CU 时间计费**）；**Neon Postgres 为可选 provider**（`DATABASE_URL` 以 `postgres://` 开头即切换） | 本方案 SSE 轮询会让 Neon 的 compute 7×24 活跃、几周烧完免费 CU 额度并被冻结（见 §7）；Turso 按读/写行数计费、空闲零成本，免费额度宽约 10×；Drizzle schema 用通用子集，两者可切 |
+| D1 | 持久化由 **`DB_PROVIDER`（sqlite \| postgres）显式选择**，配 `DATABASE_URL`：SQLite 系 = 本地 `file:`（开发/测试）或远程 Turso（生产）；Postgres 系 = 任意实例（Neon / Supabase / 自托管）。默认 `sqlite` + Turso | 目标"手动自选 SQLite/PostgreSQL"= 配置切换而非代码分叉；见 §4.1 矩阵与 §7.3；Turso 免费档无 CU 时间计费，Neon 有（§7.1） |
 | D2 | **免登录**：客户端自持 `client_id`（UUID，无账号）；**管理员**：`ADMIN_SECRET` 口令换 HttpOnly 签名 Cookie（无状态，不落库） | 普通用户零摩擦；"保证有管理员"由**部署者配置**保证，仓库零敏感数据 |
 | D3 | 实时通道 **SSE + POST**（事件流 `since` 游标自动续传；上行普通 POST） | Vercel 免费计划上 WS/SSE 都受函数时长上限约束，SSE 契约最干净、平台耦合最低；未来可把总线替换为 Redis/Ably 而**不改客户端契约** |
 | D4 | 跨实例广播用 **Turso 作为总线**：`events` 出站表（outbox），每个事件流每秒轮询增量 | Serverless 无共享内存；轮询在 Turso 只计"行读取"、无 CU 时间炸弹；MVP 以 ~1 qps/流 的读放大换取零额外基础设施；负载路径见 §7 |
@@ -41,6 +41,7 @@
 | D8 | 管理端 = 内置极简 `/admin` 静态页面（零构建）+ JSON 管理 API | 开箱即用，同时允许他人自建管理前端 |
 | D9 | 防滥用 = 每 IP 限流（按消息/登录/开流分桶）+ 长度上限 + 可选禁词，全走环境变量 | 覆盖最小可信基线，配置化便于复用者自定 |
 | D10 | 存储超限**自动降级**：历史持久化与实时广播解耦，必要时停写历史、仅实时（§7.2） | 免费额度耗尽应"降级保活"而非静默丢消息 |
+| D11 | 可移植性规则（§4.1）：整数自增主键 + TEXT 载荷 + **时间一律 epoch ms 整数、应用层算好传参**，SQL 层禁方言写法（`now()`/`interval`/JSONB 等） | 否则换库要改代码；"跨方言子集 + 显式 provider"是复用的根基 |
 
 ## 3. 架构与数据流
 
@@ -76,46 +77,65 @@
 
 ## 4. 数据模型
 
-所有 JSON 中的 `id`/游标一律以**字符串**序列化（BIGINT 超出 JS 安全整数）。
+**可移植性约定**：主键为整数自增（Drizzle 按方言映射：PG `serial` / SQLite `INTEGER PRIMARY KEY AUTOINCREMENT`，在保留上限内数值远小于 2³¹）；所有 JSON 中的 `id`/游标一律序列化为**字符串**；时间一律存 **epoch 毫秒整数**、由应用层计算与传参，SQL 层不出现 `now()`/`interval`/时间类型函数（详见 §4.1）。
 
 ```sql
 -- 消息（历史主表，滚动保留）
 messages (
-  id         BIGSERIAL PRIMARY KEY,        -- 单调游标
-  client_id  UUID        NOT NULL,
+  id         INTEGER PRIMARY KEY AUTOINCREMENT, -- 单调游标（Drizzle 映射：PG serial）
+  client_id  TEXT        NOT NULL,              -- UUID 字符串（格式应用层校验）
   nick       TEXT        NOT NULL,
-  text       TEXT        NOT NULL,          -- 纯文本，服务端仅做 trim/控制符清洗
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  deleted_at TIMESTAMPTZ,                   -- 软删占位
+  text       TEXT        NOT NULL,              -- 纯文本，服务端仅做 trim/控制符清洗
+  created_at INTEGER     NOT NULL,              -- epoch ms（应用层写入）
+  deleted_at INTEGER,                           -- epoch ms；软删占位
   deleted_by TEXT
 );
 
 -- 出站事件总线（各事件流轮询；短期保留 1h）
 events (
-  id         BIGSERIAL PRIMARY KEY,
+  id         INTEGER PRIMARY KEY AUTOINCREMENT, -- 单调游标
   type       TEXT NOT NULL,                 -- message | delete | ban | notice
-  payload    JSONB NOT NULL,                -- message: 完整行快照；delete: {message_id}；ban: {ip, reason}；notice: {kind, ...}
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  payload    TEXT NOT NULL,                 -- JSON 字符串（从不查询内部，故不用 JSONB）；载荷见 §5
+  created_at INTEGER NOT NULL               -- epoch ms
 );
 
 -- 在线状态（presence 心跳表）
 presence (
-  client_id UUID PRIMARY KEY,
-  last_seen TIMESTAMPTZ NOT NULL            -- 索引用于 COUNT
+  client_id TEXT PRIMARY KEY,               -- UUID 字符串
+  last_seen INTEGER NOT NULL                -- epoch ms；索引用于 COUNT
 );
 CREATE INDEX ON presence (last_seen);
 
 -- 封禁（持久化，唯一 IP）
 bans (
-  id         BIGSERIAL PRIMARY KEY,
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
   ip         TEXT NOT NULL UNIQUE,          -- MVP 精确匹配（规范化存储）；CIDR/前缀后置
   reason     TEXT NOT NULL,
   banned_by  TEXT NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  created_at INTEGER NOT NULL               -- epoch ms
 );
 ```
 
 迁移由 Drizzle 管理（SQL 迁移文件入库），`bun run db:migrate` 执行；部署者自行在目标库跑一次。
+
+### 4.1 Provider 矩阵与可移植性规则
+
+**Provider 选择**（两个环境变量，仓库不存任何密钥）：
+
+| 用途 | `DB_PROVIDER` | `DATABASE_URL` | Vercel 生产可用 |
+|---|---|---|---|
+| 本地开发 / 测试 | `sqlite` | `file:./data/dev.db` | —（仅本机） |
+| 生产 SQLite | `sqlite` | `libsql://…`（Turso） | ✅（远程） |
+| 生产 / 自托管 Postgres | `postgres` | `postgres://…`（Neon / Supabase / 自建） | ✅ |
+
+> ⚠️ **Vercel 函数文件系统是临时的** —— `file:` 型 SQLite 只能用于本地开发与测试，**禁止作为 Vercel 生产存储**；生产 SQLite 必须走远程（Turso 等）。
+
+**可移植性规则**（D11）：
+
+1. 主键一律整数自增，由 Drizzle 按方言映射（PG `serial` / SQLite `INTEGER PRIMARY KEY AUTOINCREMENT`），**不在 schema 里写 `bigserial`/`BIGSERIAL`**。
+2. 字符串列一律 `TEXT`（`client_id` 的 UUID 格式在应用层校验）；结构化载荷一律 `TEXT` 存 JSON 字符串（从不查询内部，无需 JSONB）。
+3. 时间一律 **epoch ms 整数**：写入时应用层取 `Date.now()`，比较（presence TTL、保留清理）由应用层算好边界再以参数传入；SQL 层禁止 `now()`/`interval`/方言时间函数。ISO 8601 格式化在应用层输出。
+4. 换 provider = 改 `DB_PROVIDER` + `DATABASE_URL` 并跑一次迁移，**业务与 API 契约代码零改动**；此约束纳入 §8 测试矩阵（同一套用例双库跑）。
 
 ## 5. API 契约 v0.1（草案）
 
@@ -190,6 +210,7 @@ Cookie 安全：`HttpOnly; SameSite=Lax; Secure`（生产）；`ADMIN_SECRET` �
 - 5k 条/日 → 90 天仅 45 万条，不触顶，行读取余量充足（50 并发×1 qps ≈ 1.3 亿读/月 < 5 亿）。
 - 写入是首个可能触顶的维度：每消息约 2–3 行写入（messages + events + 限流/心跳摊销）→ 1000 万行/月 ≈ **~10 万条消息/日**才到硬顶。
 - Neon（若选用）：持续在线即烧 CU——请仅在低流量演示或启用付费档时使用；其存储超限语义与 Turso 相同（写失败）。
+- **Provider 形态**（§4.1）：本地开发/测试用 `file:` SQLite 零成本；Vercel 生产用远程 Turso 或 Postgres（`file:` 型在 Vercel 上不持久，禁止作生产存储）。
 
 ### 7.2 自动收缩 / 降级（进 MVP）
 
@@ -220,8 +241,9 @@ Cookie 安全：`HttpOnly; SameSite=Lax; Secure`（生产）；`ADMIN_SECRET` �
 
 ## 8. 测试策略
 
-- **单元**：校验器（长度/禁词/UUID）、限流桶算法、会话签名/验签 —— 用内存实现 repository 接口，`bun test`。
-- **集成**（需 `DATABASE_URL`，未配置则自动 skip）：消息收发落库、软删占位、封禁即时生效、presence 计数、事件流游标续传。本仓库提供接口抽象使测试可注入内存实现，CI 无外部依赖即可跑单元层。
+- **单元**（内存 repository，恒跑）：校验器（长度/禁词/UUID）、限流桶算法、会话签名/验签。
+- **集成**（同一套用例，验证跨方言）：默认对**本地文件 SQLite**（`file:`）跑全部用例（零外部依赖）；当提供 Postgres `DATABASE_URL` 时对 **Postgres 再跑一遍**。覆盖：消息收发落库、软删占位、封禁即时生效、presence 计数、事件流游标续传。
+- 实现期以 repository 抽象隔离方言差异；CI 无外部依赖即可跑单元 + 文件 SQLite 集成层。
 
 ## 9. 目录布局（规划）
 
@@ -231,22 +253,22 @@ src/
   routes/chat.ts      # 公开端点 + SSE 事件流
   routes/admin.ts     # 管理 JSON API
   routes/admin-ui.ts  # 内置 /admin 静态页
-  lib/storage.ts      # Turso/libSQL 默认 driver；DATABASE_URL 以 postgres:// 开头则切 Neon
-  lib/schema.ts migrate.ts   # Drizzle schema + SQL 迁移（通用子集）
+  lib/storage.ts      # 按 DB_PROVIDER 选 driver（file:sqlite / libsql / postgres）
+  lib/schema.ts migrate.ts   # Drizzle schema（跨方言子集）+ 迁移
   lib/security.ts     # 口令、签名 Cookie、IP 解析
   lib/limits.ts       # 限流桶、校验、禁词
   lib/history.ts      # 保留策略 + 自动收缩/降级（§7.2）
   lib/stream.ts       # 事件流循环（可替换总线）
 public/admin.html     # 管理页（零构建）
 drizzle/              # SQL 迁移
-.env.example  vercel.json  docs/api.md(实现期由本规格提取)
+.env.example（含 DB_PROVIDER 与三种 URL 示例）  vercel.json  docs/api.md(实现期由本规格提取)
 tests/                # bun test（单元为主）
 ```
 
 ## 10. 待实现期确认的技术细节（非契约）
 
 - Vercel `maxDuration` 需按当前套餐在 `vercel.json` 配置并实测 SSE 断开时机。
-- `@libsql/client` 在 Bun/Node 双运行时的行为；本地开发用文件版 SQLite（同一 schema）与远端 Turso 的一致性。
-- Neon 可选 provider 驱动（`@neondatabase/serverless`）与 Bun 本地的兼容性验证（其 CU 语义已在 §7.1 文档化）。
+- Drizzle 跨方言 DDL 实测：自增主键（PG `serial` / SQLite `INTEGER PRIMARY KEY AUTOINCREMENT`）与建表/迁移在两种 provider 上的产物与执行方式（启动幂等建表 vs 双套迁移文件）。
+- `@libsql/client`（file/libsql）与 PG 驱动（`postgres.js` 或 `pg`）在 Bun/Node 双运行时的行为；本地 `file:` 与远端 Turso 的一致性。
 - "平均行字节"估算与保留行数统计的实现成本（采样/`COUNT`），避免每次写入全表扫描。
 - 清洗与模式评估的触发阈值（初定每 ~100 次写入评估一次）。
