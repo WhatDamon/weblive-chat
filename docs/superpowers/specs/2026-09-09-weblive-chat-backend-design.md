@@ -35,7 +35,7 @@
 | D2 | **免登录**：客户端自持 `client_id`（UUID，无账号）；**管理员**：`ADMIN_SECRET` 口令换 HttpOnly 签名 Cookie（无状态，不落库） | 普通用户零摩擦；"保证有管理员"由**部署者配置**保证，仓库零敏感数据 |
 | D3 | 实时通道 **SSE + POST**（事件流 `since` 游标自动续传；上行普通 POST） | Vercel 免费计划上 WS/SSE 都受函数时长上限约束，SSE 契约最干净、平台耦合最低；未来可把总线替换为 Redis/Ably 而**不改客户端契约** |
 | D4 | 跨实例广播用 **Turso 作为总线**：`events` 出站表（outbox），每个事件流每秒轮询增量 | Serverless 无共享内存；轮询在 Turso 只计"行读取"、无 CU 时间炸弹；MVP 以 ~1 qps/流 的读放大换取零额外基础设施；负载路径见 §7 |
-| D5 | 封禁持久化 `bans` 表，**每次发消息/开流实时查库校验**（不依赖进程内缓存一致性） | 封禁即时生效、跨实例一致；唯一索引点查成本可忽略 |
+| D5 | 封禁 = **禁言不禁看**：持久化 `bans` 表，发消息时**实时查库校验**（跨实例一致、即时生效）；已开流不断、仍可旁观，命中 IP 的流收到提示事件 | 误伤（同 IP 无辜用户/NAT）影响最小化；强制层 = 禁发 + 限流 |
 | D6 | 管理员删消息 = **软删占位**（`deleted_at` 置位、清空内容、保留 id/时间） | 避免他人回复上下文悬空；保留审计 |
 | D7 | 历史**滚动保留**：天数（`HISTORY_RETENTION_DAYS`，默认 90）**与行数上限双控**（`HISTORY_MAX_ROWS`，默认 50 万），**自动逐级收缩**；出站表短期清理（1 小时） | 免费存储有上限，超限=写入失败；双控+自收缩避免静默事故，无需外部定时器 |
 | D8 | 管理端 = 内置极简 `/admin` 静态页面（零构建）+ JSON 管理 API | 开箱即用，同时允许他人自建管理前端 |
@@ -43,6 +43,8 @@
 | D10 | 存储超限**自动降级**：历史持久化与实时广播解耦，必要时停写历史、仅实时（§7.2） | 免费额度耗尽应"降级保活"而非静默丢消息 |
 | D11 | 可移植性规则（§4.1）：整数自增主键 + TEXT 载荷 + **时间一律 epoch ms 整数、应用层算好传参**，SQL 层禁方言写法（`now()`/`interval`/JSONB 等） | 否则换库要改代码；"跨方言子集 + 显式 provider"是复用的根基 |
 | D12 | 可选**来源白名单**：`ALLOWED_ORIGINS` 未设置 = 开放（CORS `*`）；设置后 fail-closed（不在名单的跨源请求 `403 origin_not_allowed`）；无 Origin 直连默认放行，`REQUIRE_ORIGIN=1` 可收紧（§6.1） | 防第三方站点套壳/跨站借力；明确其**非认证**，强制手段仍靠封禁 + 限流 |
+| D13 | 建表 = **启动幂等自建**：`DB_MIGRATE_ON_BOOT`（默认开）首次请求前 `CREATE TABLE IF NOT EXISTS`；schema 演进期后由 Drizzle 迁移文件接管 | "直接部署到 Vercel" 零手动步骤；当前 schema 小，自建表足够 |
+| D14 | 历史回溯默认**全量开放**（可翻页）；`HISTORY_MAX_BACKFILL` 可限回溯深度/关闭（0=不限制）。免登录下历史 = 公开存档，README 明示合规风险 | 开箱即用（新访客补上下文）；部署者按需收紧 |
 
 ## 3. 架构与数据流
 
@@ -65,7 +67,7 @@
 
 **SSE 事件流内部循环**（每个连接 = 一个独立函数实例）：
 
-1. 打开校验：IP 被封 → 推 `ban` 事件并关闭；登记 presence（upsert `last_seen`）。
+1. 打开：登记 presence（upsert `last_seen`）。封禁语义为**禁言**（D5）：只拦截发消息，不拒绝/断开旁观流；本连接 IP 被禁言时收到 `ban` 提示事件（流保持打开）。
 2. 每 ~1s：`SELECT * FROM events WHERE id > since ORDER BY id LIMIT 100` → 按类型推送；成功后游标前移。兜底重连由**客户端**用 `since` 完成。
 3. 每 ~10s：upsert 自身 presence（TTL 45s，超时即视为离线）。
 4. 每 ~5s：`SELECT COUNT(*) FROM presence WHERE last_seen > :cutoff`（cutoff = 当前 epoch ms − 45s，应用层算好）→ 推 `presence` 事件。
@@ -117,7 +119,7 @@ bans (
 );
 ```
 
-迁移由 Drizzle 管理（SQL 迁移文件入库），`bun run db:migrate` 执行；部署者自行在目标库跑一次。
+迁移/建表：**启动幂等自建**（D13）——`DB_MIGRATE_ON_BOOT`（默认开）首次请求前 `CREATE TABLE IF NOT EXISTS`；schema 演进期后由 Drizzle 迁移文件（`bun run db:migrate`）接管。
 
 ### 4.1 Provider 矩阵与可移植性规则
 
@@ -147,7 +149,7 @@ bans (
 | 端点 | 说明 |
 |---|---|
 | `GET /api/meta` | 轻量配置：`{limits:{nick_max,text_max,retention_days}, presence:{ttl_s}}`（无 DB 依赖，供前端校验与展示） |
-| `GET /api/messages?before=<id>&limit=50` | 历史回溯，newest-first，默认最近 50（≤200）；软删消息返回占位；`ephemeral` 模式返回 `{messages: [], mode: "ephemeral"}` |
+| `GET /api/messages?before=<id>&limit=50` | 历史回溯，newest-first，默认最近 50（≤200）；回溯深度默认全量，`HISTORY_MAX_BACKFILL` 可限深/关闭；软删消息返回占位；`ephemeral` 模式返回 `{messages: [], mode: "ephemeral"}` |
 | `GET /api/messages?since=<id>&limit=200` | 增量补齐（gap-sync，oldest-first；与事件流事件去重由客户端按 id 处理） |
 | `POST /api/messages` | body `{client_id, nick, text}` → `201 {id, created_at}`；`403 banned`（含 reason）／`429`／`400` |
 | `GET /api/stream?since=<id\|0>` | SSE 事件流（`text/event-stream`） |
@@ -158,10 +160,12 @@ SSE 事件类型：
 |---|---|---|
 | `message` | `{id, client_id, nick, text, created_at}` | 新消息（含自己发的，按 id 去重） |
 | `delete` | `{message_id}` | 某消息被管理员删除 → 前端替换为占位 |
-| `presence` | `{online: number}` | 在线人数（45s TTL 窗口） |
+| `presence` | `{online: number}` | 在线**人数**（45s TTL 窗口；按 `client_id` 去重，同浏览器多标签 = 1） |
 | `notice` | `{kind: "history_mode", mode}` | 持久化模式变化（如自动降级到 `ephemeral`）→ 前端可提示 |
-| `ban` | `{reason}` | 本连接 IP 被封 → 收到后前端停止并提示 |
+| `ban` | `{reason}` | 本连接 IP 被**禁言**（仅推给命中 IP 的流）→ 前端提示"你已被禁言"；流保持打开可继续旁观 |
 | `: ping`（注释行） | — | 保活 |
+
+**流与游标语义**：`/api/stream` 的 `since` 指向 **`events.id`**（该表保留 1h），`/api/messages?since=` 指向 **`messages.id`** —— 两个独立 id 空间。客户端流程：开流（`since=0` 或上次游标）→ 回溯/gap-sync 走 messages → 事件按消息 id 去重。**回退规则**：若断线超过 events 保留期导致旧游标空转（`WHERE id > since` 无结果且 `since` 落后于当前最小 id），将游标重置为当前最大 `events.id`，并用 `GET /api/messages?since=<本地最新 messages.id>` 补齐缺口。
 
 ### 5.2 管理端点（需会话 Cookie）
 
@@ -191,6 +195,7 @@ Cookie 安全：`HttpOnly; SameSite=Lax; Secure`（生产）；`ADMIN_SECRET` �
 - **IP 来源**：`x-forwarded-for` 首跳（Vercel 注入），本地开发回退请求 IP；入库前规范化。
 - **CORS / 来源白名单**：见 §6.1。管理端点仅同源（Cookie 机制天然同源约束）。
 - **存储安全**：纯文本不存 HTML；XSS 为前端渲染责任（契约中明示）。
+- **审计与隐私**：`deleted_by` 仅存固定标识（管理员无账号），不落操作者 IP；`bans` 表存 IP 属功能必需，README 提示合规。
 - **仓库**：无任何密钥；`.env.example` 为唯一模板。
 
 ### 6.1 来源白名单（Origin allowlist）
@@ -284,14 +289,15 @@ src/
   lib/stream.ts       # 事件流循环（可替换总线）
 public/admin.html     # 管理页（零构建）
 drizzle/              # SQL 迁移
-.env.example（含 DB_PROVIDER、三种 URL、ALLOWED_ORIGINS 示例）  vercel.json  docs/api.md(实现期由本规格提取)
+.env.example（含 DB_PROVIDER、三种 URL、ALLOWED_ORIGINS、DB_MIGRATE_ON_BOOT、HISTORY_MAX_BACKFILL 示例）  vercel.json  docs/api.md(实现期由本规格提取)
 tests/                # bun test（单元为主）
 ```
 
 ## 10. 待实现期确认的技术细节（非契约）
 
-- Vercel `maxDuration` 需按当前套餐在 `vercel.json` 配置并实测 SSE 断开时机。
-- Drizzle 跨方言 DDL 实测：自增主键（PG `serial` / SQLite `INTEGER PRIMARY KEY AUTOINCREMENT`）与建表/迁移在两种 provider 上的产物与执行方式（启动幂等建表 vs 双套迁移文件）。
+- SSE 在 Vercel 的实测验证：官方文档 Hobby 默认/最大时长均为 300s（fluid compute），验证空闲不提前断流、断点重连与 presence TTL 衔接。
+- Drizzle 跨方言 DDL 实测：自增主键（PG `serial` / SQLite `INTEGER PRIMARY KEY AUTOINCREMENT`）与启动幂等建表（`CREATE TABLE IF NOT EXISTS` 双方言均支持）的产物；schema 演进再引入迁移文件。
+- 发消息的 events + messages 双写须在同一事务内（SQLite/PG 均支持），失败整体回滚。
 - `@libsql/client`（file/libsql）与 PG 驱动（`postgres.js` 或 `pg`）在 Bun/Node 双运行时的行为；本地 `file:` 与远端 Turso 的一致性。
 - "平均行字节"估算与保留行数统计的实现成本（采样/`COUNT`），避免每次写入全表扫描。
 - 清洗与模式评估的触发阈值（初定每 ~100 次写入评估一次）。
