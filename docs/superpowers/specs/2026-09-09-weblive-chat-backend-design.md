@@ -199,12 +199,12 @@ Cookie 安全：`HttpOnly; SameSite=Lax; Secure`（生产）；`ADMIN_SECRET` �
 
 ### 5.3 状态码速查
 
-`200/201/204`、`400`（校验失败 code 细分）、`401`（口令错/会话失效）、`403 banned` / `403 origin_not_allowed`、`404`、`409`（重复封禁）、`429`（限流 + `retry_after_ms`）、`500`、`503 not_configured`（缺 DATABASE_URL）、`503 db_unavailable`（存储冻结/不可用，见 §7.2 Neon 语义）。
+`200/201/204`、`400`（校验失败 code 细分）、`401`（口令错/会话失效）、`403 banned` / `403 origin_not_allowed`（Origin 不在白名单）/ `403 missing_origin`（`REQUIRE_ORIGIN=1` 且请求无 Origin）、`404`、`409`（重复封禁）、`429`（限流 + `retry_after_ms`）、`500`、`503 not_configured`（缺 DATABASE_URL）、`503 db_unavailable`（存储冻结/不可用，见 §7.2 Neon 语义）。
 
 ## 6. 防滥用与安全（MVP 基线）
 
-- **限流**（每 IP 分桶，落库 `ON CONFLICT` upsert）：消息 10 条/10s 且 300 条/h；登录 5 次/5min；开流 20 次/min。
-- **长度/格式**：nick ≤ 24 字符；text ≤ 2000 字符；均 trim + 去控制字符；`client_id` 须为合法 UUID。
+- **限流**（每 IP 分桶，落库 `ON CONFLICT` upsert，60s 固定窗口、epoch ms 对齐）：消息 10 条/min；登录 5 次/min；开流 20 次/min。（数值以计划/T1 config 默认值为准，本节早期草稿的「10 条/10s 且 300 条/h / 登录 5 次/5min / text ≤ 2000」为陈旧值，已废弃。）
+- **长度/格式**：nick ≤ 24 字符；text ≤ 1000 字符；均 trim + 去控制字符；`client_id` 须为合法 UUID。
 - **禁词**：`BANNED_WORDS`（逗号分隔，可选），命中 `400`。
 - **IP 来源**：`x-forwarded-for` 首跳（Vercel 注入），本地开发回退请求 IP；入库前规范化。
 - **CORS / 来源白名单**：见 §6.1。管理端点仅同源（Cookie 机制天然同源约束）。
@@ -222,7 +222,7 @@ Cookie 安全：`HttpOnly; SameSite=Lax; Secure`（生产）；`ADMIN_SECRET` �
 |---|---|
 | `ALLOWED_ORIGINS` 未设置 | **开放模式**：公开端点 CORS `*`；管理端点仍仅同源 |
 | 设置名单（如 `https://a.com,https://b.com`） | **白名单模式（fail-closed）**：请求带 Origin 且不在名单 → `403 origin_not_allowed`；在名单 → 回显对应 `Access-Control-Allow-Origin` |
-| 请求不带 Origin（同源 / 非浏览器 / curl） | 默认放行；`REQUIRE_ORIGIN=1` 时强制要求且必须在名单内（适合纯 API 部署） |
+| 请求不带 Origin（同源 / 非浏览器 / curl） | 默认放行；`REQUIRE_ORIGIN=1` 时强制要求且必须在名单内（拒绝码 `403 missing_origin`，适合纯 API 部署） |
 
 规则：
 
