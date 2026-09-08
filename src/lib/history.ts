@@ -67,7 +67,7 @@ export interface HistoryDeps {
 // PG 的 messages.id 为 serial（int4）：不能把 Number.MAX_SAFE_INTEGER 直接作为 `id < ?` 的实参——
 // postgres.js 以文本发送数字、PG 按 int4 列类型解析 → 执行期 out of range（与 tests/integration/repo.test.ts 同因同值）。
 // sqlite INTEGER 存 2_147_483_647 亦无碍（保留期裁剪封顶 ~maxRows 行，id 现实远低于此）。
-const MAX_ID_BOUND = 2_147_483_647;
+export const MAX_ID_BOUND = 2_147_483_647;
 
 /**
  * 维护入口：每 maintenanceEvery 次写调用一次。

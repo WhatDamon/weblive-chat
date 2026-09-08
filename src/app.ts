@@ -6,17 +6,28 @@ import { jsonError } from "./lib/http";
 import { registerChat } from "./routes/chat";
 import { newHistoryState, performMaintenance } from "./lib/history";
 
-export interface AppDeps { cfg: AppConfig; repo: Repo }
+export interface AppDeps {
+  cfg: AppConfig;
+  repo: Repo;
+}
 
 export function createApp(deps: AppDeps): Hono {
   const { cfg, repo } = deps;
   const history = newHistoryState();
+  // HISTORY_RETENTION_DAYS 播种：/api/meta 首次维护前即回报正确 retention_days（不干扰 notice 的 mode 判定）
+  history.retentionDays = cfg.retentionDays;
   let booted: Promise<void> | null = null;
-  const boot = () => (booted ??= (async () => { if (cfg.migrateOnBoot) await repo.bootstrap(); })());
+  const boot = () =>
+    (booted ??= (async () => {
+      if (cfg.migrateOnBoot) await repo.bootstrap();
+    })());
   const app = new Hono();
 
   // 惰性 boot（Vercel 冷启动幂等）+ 每请求快路径
-  app.use("*", async (c, next) => { await boot(); await next(); });
+  app.use("*", async (c, next) => {
+    await boot();
+    await next();
+  });
 
   // /api 中间件：Origin 闸口（§6.1）+ CORS 响应头
   app.use("/api/*", async (c, next) => {
@@ -40,18 +51,34 @@ export function createApp(deps: AppDeps): Hono {
   });
 
   registerChat(app, {
-    cfg, repo, history,
+    cfg,
+    repo,
+    history,
     // §7.2 维护：每 maintenanceEvery 次写触发一次清理与档位评估；档位变化广播 notice
     maintain: async (now = Date.now()) => {
       history.writeCount += 1;
-      if (history.writeCount % cfg.maintenanceEvery !== 0) return { mode: history.mode, retentionDays: history.retentionDays };
+      if (history.writeCount % cfg.maintenanceEvery !== 0)
+        return { mode: history.mode, retentionDays: history.retentionDays };
       const res = await performMaintenance({ repo, cfg }, now);
-      if (res.mode !== history.mode || res.retentionDays !== history.retentionDays) {
+      if (
+        res.mode !== history.mode ||
+        res.retentionDays !== history.retentionDays
+      ) {
         const prev = history.mode;
         history.mode = res.mode;
         history.retentionDays = res.retentionDays;
         if (prev !== res.mode) {
-          await repo.insertEvent("notice", JSON.stringify({ kind: "history_mode", mode: res.mode, retention_days: res.retentionDays }), now).catch(() => {});
+          await repo
+            .insertEvent(
+              "notice",
+              JSON.stringify({
+                kind: "history_mode",
+                mode: res.mode,
+                retention_days: res.retentionDays,
+              }),
+              now,
+            )
+            .catch(() => {});
         }
       }
       return { mode: history.mode, retentionDays: history.retentionDays };
