@@ -1,7 +1,7 @@
 # weblive-chat 后端设计规格
 
 - 日期：2026-09-09
-- 状态：待审查（draft）
+- 状态：已批准（approved，2026-09-09）
 - 范围：后端服务 + API 契约 v0.1 + 内置**零构建验证 Demo**（`public/demo.html`，同仓同 Vercel 项目、同源部署，兼作契约参考客户端）；完整前端应用不在本期，前端将依据本文档的契约接入
 
 ## 1. 产品目标与约束
@@ -73,7 +73,7 @@
 1. 打开：登记 presence（upsert `last_seen`）。封禁语义为**禁言**（D5）：只拦截发消息，不拒绝/断开旁观流；本连接 IP 被禁言时收到 `ban` 提示事件（流保持打开）。
 2. 每 ~1s：`SELECT * FROM events WHERE id > since ORDER BY id LIMIT 100` → 按类型推送；成功后游标前移。兜底重连由**客户端**用 `since` 完成。
 3. 每 ~10s：upsert 自身 presence（TTL 45s，超时即视为离线）。
-4. 每 ~5s：`SELECT COUNT(*) FROM presence WHERE last_seen > :cutoff`（cutoff = 当前 epoch ms − 45s，应用层算好）→ 推 `presence` 事件。
+4. 每 ~5s：`SELECT COUNT(*) FROM presence WHERE last_seen > :cutoff`（cutoff = 当前 epoch ms − 45s，应用层算好）；**仅当人数相对上次变化时才推 `presence` 事件**（无变化不广播，避免周期无谓推送）。
 5. 推送间隔内发送 SSE 注释行（`: ping`）保活。
 6. 关闭/异常时删除或令自身 presence 行过期（靠 TTL，不依赖优雅关闭）。
 
@@ -173,9 +173,9 @@ SSE 事件类型：
 | event | data | 语义 |
 |---|---|---|
 | `message` | `{id, client_id, nick, text, created_at}` | 新消息（含自己发的，按 id 去重） |
-| `delete` | `{message_id}` | 某消息被管理员删除 → 前端替换为占位 |
+| `delete` | `{id: string}` | 某消息被管理员删除 → 前端替换为占位（字段名与 MessageView.id 一致；早期草稿写作 `{message_id}`，实现收敛为 `{id}`，见 §11） |
 | `presence` | `{online: number}` | 在线**人数**（45s TTL 窗口；按 `client_id` 去重，同浏览器多标签 = 1） |
-| `notice` | `{kind: "history_mode", mode}` | 持久化模式变化（如自动降级到 `ephemeral`）→ 前端可提示 |
+| `notice` | `{kind: "history_mode", mode, retention_days}` | 持久化模式变化（如自动降级到 `ephemeral`；含当前生效保留天数）→ 前端可提示 |
 | `ban` | `{reason}` | 本连接 IP 被**禁言**（仅推给命中 IP 的流）→ 前端提示"你已被禁言"；流保持打开可继续旁观 |
 | `: ping`（注释行） | — | 保活 |
 
@@ -185,26 +185,29 @@ SSE 事件类型：
 
 | 端点 | 说明 |
 |---|---|
-| `POST /api/admin/login` | body `{password}`；成功 → 置 `wl_admin` HttpOnly Cookie（HMAC 签名，默认 12h） |
-| `GET /api/admin/session` | 校验 Cookie → `{admin: true}` |
+| `POST /api/admin/login` | body `{secret}`（对照 `ADMIN_SECRET`）；成功 → 置 `wl_admin` HttpOnly Cookie（HMAC 签名，有效 `ADMIN_SESSION_DAYS` 默认 7d）；失败/超限 `401 invalid_secret` / `429 rate_limited`（登录限流 `LOGIN_RATE_PER_MIN=5`） |
+| `GET /api/admin/me` | 校验 Cookie → `{authed: true}`（会话鉴权守卫，未认证/过期统一 `401 unauthorized`） |
 | `POST /api/admin/logout` | 清除 Cookie |
-| `GET /api/admin/bans?limit&offset` | 封禁列表（倒序，可翻页） |
-| `POST /api/admin/bans` | body `{ip, reason}` → 创建；重复返回 `409` |
-| `DELETE /api/admin/bans/:ip` | 解封 |
-| `GET /api/admin/messages?before&limit` | 查看消息（含已软删标记） |
-| `DELETE /api/admin/messages/:id` | 软删 → 写 `delete` 出站事件 |
-| `GET /api/admin/stats` | `{online, messages_total, messages_retained, history: {mode, retention_days, estimate_bytes}}` —— 暴露存储用量与当前持久化模式，超限前给预警 |
+| `GET /api/admin/bans?limit&offset` | 封禁列表（created_at 倒序，可翻页，limit 1..500） |
+| `POST /api/admin/bans` | body `{ip, reason}` → 新增/覆盖；幂等 upsert：重复 → `200 {created: false}`（created 标志由 repo 双驱动返回，无 409） |
+| `DELETE /api/admin/bans/:ip` | 解封（204/404） |
+| `DELETE /api/admin/messages/:id` | 软删（占位行保留、text 清空、`deleted_by='admin'` 固定标识、不存操作者 IP）→ 写 `delete` 出站事件（payload 仅 `{id}`） |
+| `GET /api/admin/stats` | `{online, messages_total, messages_retained, history: {mode, retention_days, estimate_bytes}}` —— 暴露存储用量与当前持久化模式，超限前给预警；读取时顺带触发维护刷新档位（借维护节拍，写/读共用同一计数器） |
 
-Cookie 安全：`HttpOnly; SameSite=Lax; Secure`（生产）；`ADMIN_SECRET` 启动时校验（生产缺失/过短即拒绝启动，错误码 `not_configured` 引导部署者）。
+注：管理端不再提供 `GET /api/admin/messages`（消息查看由公开 `GET /api/messages` 承担，软删标记同样透出）；本表于 T7 落库后按实现契约修订（Ruling B，替换早于 ADMIN_SECRET 决策的陈旧行：`{password}`/12h、`/session → {admin}`、重复封禁 409）。
+
+Cookie 安全：`HttpOnly; SameSite=Lax; Secure`（生产）；`ADMIN_SECRET` 在 `NODE_ENV=production` 且未设置时于启动阶段抛错拒绝（仅校验缺失、无长度下限，属启动错误而非 HTTP 响应码）。
 
 ### 5.3 状态码速查
 
-`200/201/204`、`400`（校验失败 code 细分）、`401`（口令错/会话失效）、`403 banned` / `403 origin_not_allowed`、`404`、`409`（重复封禁）、`429`（限流 + `retry_after_ms`）、`500`、`503 not_configured`（缺 DATABASE_URL）、`503 db_unavailable`（存储冻结/不可用，见 §7.2 Neon 语义）。
+`200/201/204`、`400`（校验失败 code 细分）、`401`（口令错/会话失效）、`403 banned` / `403 origin_not_allowed`（Origin 不在白名单）/ `403 missing_origin`（`REQUIRE_ORIGIN=1` 且请求无 Origin）、`404`、`429`（限流 + `retry_after_ms`）、`500`、`503 db_unavailable`（存储冻结/不可用，见 §7.2 Neon 语义）。
+
+> 配置缺失不产生响应码：`DATABASE_URL`（postgres 形态）/`ADMIN_SECRET`（生产）等在启动/构建阶段由 `loadConfig` 直接抛错，无 `503 not_configured`。
 
 ## 6. 防滥用与安全（MVP 基线）
 
-- **限流**（每 IP 分桶，落库 `ON CONFLICT` upsert）：消息 10 条/10s 且 300 条/h；登录 5 次/5min；开流 20 次/min。
-- **长度/格式**：nick ≤ 24 字符；text ≤ 2000 字符；均 trim + 去控制字符；`client_id` 须为合法 UUID。
+- **限流**（每 IP 分桶，落库 `ON CONFLICT` upsert，60s 固定窗口、epoch ms 对齐）：消息 10 条/min；登录 5 次/min；开流 20 次/min。（数值以计划/T1 config 默认值为准，本节早期草稿的「10 条/10s 且 300 条/h / 登录 5 次/5min / text ≤ 2000」为陈旧值，已废弃。）
+- **长度/格式**：nick ≤ 24 字符；text ≤ 1000 字符；均 trim + 去控制字符；`client_id` 须为合法 UUID。
 - **禁词**：`BANNED_WORDS`（逗号分隔，可选），命中 `400`。
 - **IP 来源**：`x-forwarded-for` 首跳（Vercel 注入），本地开发回退请求 IP；入库前规范化。
 - **CORS / 来源白名单**：见 §6.1。管理端点仅同源（Cookie 机制天然同源约束）。
@@ -222,7 +225,7 @@ Cookie 安全：`HttpOnly; SameSite=Lax; Secure`（生产）；`ADMIN_SECRET` �
 |---|---|
 | `ALLOWED_ORIGINS` 未设置 | **开放模式**：公开端点 CORS `*`；管理端点仍仅同源 |
 | 设置名单（如 `https://a.com,https://b.com`） | **白名单模式（fail-closed）**：请求带 Origin 且不在名单 → `403 origin_not_allowed`；在名单 → 回显对应 `Access-Control-Allow-Origin` |
-| 请求不带 Origin（同源 / 非浏览器 / curl） | 默认放行；`REQUIRE_ORIGIN=1` 时强制要求且必须在名单内（适合纯 API 部署） |
+| 请求不带 Origin（同源 / 非浏览器 / curl） | 默认放行；`REQUIRE_ORIGIN=1` 时强制要求且必须在名单内（拒绝码 `403 missing_origin`，适合纯 API 部署） |
 
 规则：
 
@@ -318,3 +321,19 @@ tests/                # bun test（单元为主）
 - 发消息 events + messages 双写须在同一事务内（SQLite batch / PG begin），失败整体回滚。
 - "平均行字节"估算与保留行数统计的实现成本（`COUNT` 每 ~100 次写入评估一次），避免每次写入全表扫描。
 - 静态页随函数部署：`/demo.html`、`/admin` 由 Hono 同进程读取 `public/` 提供（同源）；Vercel 上将 `public/**` 打进函数文件系统（实现期验证）。
+
+## 11. 实现后记录（2026-09-09，T1–T10 落地，状态 approved）
+
+本文档已由草案转为已批准实现契约；`docs/api.md` 按实现逐项校正。与早期草稿文字不一致处均属**实现收敛**（Ruling 记录于计划执行账本）：
+
+- **events payload 构造于 repo 事务内**：`sendMessageAndEvent` 先插 `messages` 拿自增 id，再构造 `{id: String(messageId), client_id, nick, text, created_at}` 载荷并在同一事务内插 `events`（双写原子）。
+- **SSE 支持可选 `client_id=<uuid>`**（presence 归因/多标签去重），缺失回落每连接 `anon-<uuid>`。
+- **`ephemeral` 消息 id 形如 `e<eventId>`**：避开 `messages.id` 命名空间，杜绝 delete 事件误删直播消息。
+- **`delete` 事件载荷为 `{id}`**（草案写作 `{message_id}`），与 MessageView.id 同字段。
+- **管理契约（Ruling B）**：登录 body `{secret}`、会话探测 `GET /api/admin/me → {authed:true}`、重复封禁幂等 upsert `200 {created:boolean}`（无 409）、会话有效 `ADMIN_SESSION_DAYS` 默认 7d；不再提供 `GET /api/admin/messages`（历史走公开端点）。
+- **`/api/messages` 契约收紧**：`before`/`since` 互斥（400 invalid_body）；`limit` 缺省 50、1–200 夹取、非纯数字 400 invalid_cursor；游标/`limit` 上界夹取 `MAX_ID_BOUND`（2³¹−1，PG serial/int4 安全）。
+- **messages 响应 `id` 一律字符串、`created_at` ISO 8601**；SSE 事件载荷 `created_at` 为 epoch ms 数字。
+- **`rate_limits` 表落地**（D16 第 5 表）：`bucket × scope × window_start` 复合主键，`ON CONFLICT … count=count+1 RETURNING count` 原子计数（双方言同 SQL）。
+- **存储层 = 手写可移植 SQL**（`lib/repo.ts` 双驱动 + `lib/ddl.ts` 按 provider 幂等 DDL；无 ORM）；`bans` 表以 `ip` 为 PRIMARY KEY（草案 §4 的独立 `id`+UNIQUE 收敛掉），保留 `banned_by` 审计列。
+- **限流/长度默认值对齐**（§6）：消息 10/min、开流 20/min、登录 5/min（60s 固定窗口）；text ≤ 1000。
+- **§10 待确认项结果**：双写事务（✓）、静态页随函数 `includeFiles`（✓）、`hono` 4.13 无 `node-serverless` 子路径 → `index.ts` 导出自持懒转发 handler（✓）、`Bun.serve idleTimeout` 上限 255（✓）、开流限流接线（✓）。**剩余仅云端实测**（Vercel 函数 300s/SSE 断线续传/`process.cwd()` 下 `public/` 落盘）——`docs/api.md` 已把断线重连列为客户端义务。

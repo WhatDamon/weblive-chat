@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>weblive-chat Demo（契约参考客户端）</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif; margin: 0; background: #f4f5f7; color: #1c1e21; }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 16px; }
+  header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  h1 { font-size: 20px; margin: 0; }
+  #status { font-size: 13px; padding: 2px 8px; border-radius: 10px; background: #e8e8ea; }
+  #status.ok { background: #d4edda; }
+  #status.bad { background: #f8d7da; }
+  a { color: #0a66c2; }
+  .card { background: #fff; border: 1px solid #d9dbe0; border-radius: 8px; padding: 12px; margin: 12px 0; }
+  .row { display: flex; gap: 8px; margin: 8px 0; flex-wrap: wrap; align-items: center; }
+  input[type=text], input[type=password] { padding: 6px 8px; border: 1px solid #c4c7cc; border-radius: 6px; }
+  input[type=text]#text { flex: 1; min-width: 200px; }
+  button { padding: 6px 12px; border: 1px solid #c4c7cc; background: #f0f1f3; border-radius: 6px; cursor: pointer; }
+  button.primary { background: #0a66c2; border-color: #0a66c2; color: #fff; }
+  #messages { list-style: none; margin: 6px 0 0; padding: 0; }
+  #messages li { padding: 6px 4px; border-bottom: 1px solid #ececf0; }
+  .del { color: #999; font-style: italic; }
+  .muted { color: #666; font-size: 12px; }
+  .err { color: #c0392b; }
+  #notice { white-space: pre-wrap; font-size: 13px; min-height: 1em; }
+  details { margin-top: 8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>weblive-chat Demo</h1>
+    <span>在线 <b id="online">?</b> 人</span>
+    <span class="muted">本机 IP：<span id="ip">…</span></span>
+    <a href="/admin">管理页</a>
+    <span id="status">init…</span>
+  </header>
+
+  <div class="card">
+    <div class="row">
+      <input type="text" id="nick" placeholder="昵称（Enter 发送）" maxlength="24">
+      <input type="text" id="text" placeholder="说点什么…" maxlength="1000">
+      <button class="primary" id="send">发送</button>
+    </div>
+    <div id="notice" class="muted"></div>
+  </div>
+
+  <div class="card">
+    <ul id="messages"></ul>
+  </div>
+
+  <details class="card">
+    <summary>契约参考：本 Demo 的关键行为</summary>
+    <ul class="muted">
+      <li><b>免登录</b>：发言无需账号；浏览器本地持久化 <code>wl.nick</code> 昵称与 <code>wl.client</code>（client_id UUID）——同一浏览器多标签共用同 id = 在线按「人」计（presence 去重）。</li>
+      <li><b>实时通道</b>：GET /api/stream?client_id=&amp;since= 的 SSE，断线固定 1s 重连（since 续传；真实客户端可换指数退避上限 ~30s）。</li>
+      <li><b>禁言自测</b>（D5 禁言不禁看）：下方输入管理口令后「封禁本机 IP」→ 此后本机 POST 消息得 403 banned，但本 SSE 流保持、仍可观看。</li>
+    </ul>
+  </details>
+
+  <details class="card" id="selfBanBox">
+    <summary>禁言自测（封禁本机 IP）</summary>
+    <p class="muted">口令 = 部署环境变量 <code>ADMIN_SECRET</code>；生产未配置时服务拒绝启动，本地开发默认为 dev-insecure-secret。封禁后本机发消息将收到 403（观看不受影响）。</p>
+    <div class="row">
+      <input type="password" id="secret" placeholder="ADMIN_SECRET 口令">
+      <button id="selfBan">封禁本机 IP（<span id="selfIp">…</span>）</button>
+    </div>
+  </details>
+</div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch {} },
+};
+const cid = store.get("wl.client") || (() => { const id = crypto.randomUUID(); store.set("wl.client", id); return id; })();
+$("nick").value = store.get("wl.nick") || "";
+$("nick").addEventListener("input", () => store.set("wl.nick", $("nick").value.trim()));
+
+const listEl = $("messages");
+const seen = new Map();          // id → li（跨历史/实时去重，消息 id 字符串键）
+let esClosed = false;            // 顶部声明（connect 循环读）
+// 去重与游标分工：渲染去重统一走 seen Map（数字与 "e前缀" 直播 id 一律入 Map；数字水位
+// 渲染跳过会误删历史旧消息，故不采用）；since 仅作重连续传下界（见 handleBlock），只在
+// message/delete 事件命中纯数字 id 时单调推进，与渲染去重互不干扰。
+
+const NOTE = "placeholder";
+// 空态提示占位（单个 muted li，仅在列表无真消息时存在；首个真消息到达即移除）
+function setNote(text) {
+  let p = listEl.querySelector("." + NOTE);
+  if (text == null) { if (p) p.remove(); return; }
+  if (!p) {
+    const li = document.createElement("li");
+    li.className = "muted " + NOTE;
+    listEl.append(li);
+    p = li;
+  }
+  p.textContent = text;
+}
+
+const timeOf = (t) => { const d = new Date(typeof t === "number" ? t : t); return isNaN(d) ? "" : " " + d.toLocaleTimeString(); };
+const notice = (msg, isErr) => { const n = $("notice"); n.textContent = msg; n.className = isErr ? "err" : ""; };
+const setStatus = (text, cls) => { const s = $("status"); s.textContent = text; s.className = cls || ""; };
+
+function renderMessage(p) {
+  if (seen.has(p.id)) return;
+  const li = document.createElement("li");
+  li.dataset.at = String(p.created_at); // 供实时 delete 事件重建占位时复用时间戳
+  const ts = document.createElement("span");
+  ts.className = "muted";
+  ts.textContent = timeOf(p.created_at);
+  if (p.deleted) {
+    const d = document.createElement("span");
+    d.className = "del";
+    d.textContent = "（已删除）";
+    li.append(d, ts);
+  } else {
+    const who = document.createElement("b");
+    who.textContent = p.nick + "：";
+    const body = document.createElement("span");
+    body.textContent = p.text;
+    li.append(who, body, ts);
+  }
+  seen.set(p.id, li);
+  if (listEl.querySelector("." + NOTE)) setNote(null); // 首个真消息到达即清空提示占位
+  listEl.prepend(li);   // 统一时间线「新在上、旧在下」：历史与实时都前插
+  while (listEl.children.length > 200) listEl.lastChild.remove(); // 修剪最旧（底部）
+}
+
+// 实时软删（delete 事件，服务端 payload {id}）：命中节点重建为「（已删除）」占位，无需刷新
+function markDeleted(id) {
+  const li = seen.get(String(id));
+  if (!li) return;
+  const at = timeOf(li.dataset.at);
+  li.textContent = "";
+  const d = document.createElement("span");
+  d.className = "del";
+  d.textContent = "（已删除）";
+  li.append(d);
+  if (at) {
+    const ts = document.createElement("span");
+    ts.className = "muted";
+    ts.textContent = at;
+    li.append(ts);
+  }
+}
+
+async function loadHistory() {
+  setNote("加载历史…");
+  try {
+    const j = await fetch("/api/messages?limit=50").then((r) => r.json());
+    // 时间线约定「新在上、旧在下」：API 返回新→旧，逐个前插会排成旧在上 → 先逆转为旧→新再前插
+    const msgs = j.messages.slice().reverse();
+    for (const m of msgs) renderMessage(m);
+    if (j.mode === "ephemeral") setNote("（仅实时模式：历史已停止写入，以下为实时广播）");
+    else if (!msgs.length) setNote("（暂无消息，发一条试试）");
+    else setNote(null);
+  } catch { setNote(null); /* 网络/JSON 错误静默，等 SSE 侧自行恢复 */ }
+}
+
+async function send() {
+  const text = $("text").value.trim();
+  const nick = ($("nick").value.trim() || "路人").slice(0, 24);
+  if (!text) return;
+  $("text").value = "";
+  store.set("wl.nick", nick);
+  try {
+    const res = await fetch("/api/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ client_id: cid, nick, text }),
+    });
+    const j = await res.json().catch(() => null);
+// 发送失败/网络异常时的提示区写入（notice 区纯文本）
+    if (!res.ok) {
+      $("text").value = text; // 失败还原输入
+      notice((j && j.error && j.error.message) || res.status + " 发送失败", true);
+      if (res.status === 403) setStatus("本机已被禁言（禁发不禁看）", "bad");
+      return;
+    }
+    notice("");
+  } catch { $("text").value = text; notice("网络异常，发送失败", true); }
+}
+
+// —— 手写 SSE 读取器：契约重连示范（断线固定 1s；since 续传游标）——
+let since = 0; // SSE 续传游标：0 = 从头开始；由 handleBlock 的 bumpSince 单调推进（见下）
+async function connect() {
+  while (!esClosed) {
+    setStatus("connecting…");
+    try {
+      const res = await fetch("/api/stream?client_id=" + encodeURIComponent(cid) + (since ? "&since=" + since : ""));
+      if (!res.ok) {
+        let msg = res.status + " " + res.statusText;
+        try { const j = await res.json(); msg = (j && j.error && j.error.message) || msg; } catch {}
+        setStatus("stream " + res.status + "，" + msg, "bad");
+        await sleep(2000);
+        continue;
+      }
+      setStatus("connected", "ok");
+      const reader = res.body.getReader();
+      const dec = new TextDecoder(); let buf = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let i;
+        while ((i = buf.indexOf("\n\n")) >= 0) {
+          const block = buf.slice(0, i); buf = buf.slice(i + 2);
+          handleBlock(block);
+        }
+      }
+    } catch { /* 断线重连 */ }
+    setStatus("reconnecting…", "bad");
+    await sleep(1000);
+  }
+}
+function handleBlock(block) {
+  let type = "message", data = null;
+  for (const line of block.split("\n")) {
+    if (line.startsWith("event:")) type = line.slice(6).trim();
+    else if (line.startsWith("data:")) { try { data = JSON.parse(line.slice(5).trim()); } catch { data = null; } }
+  }
+  if (data === null) return; // ": ping" 等注释帧无 data，忽略
+  if (type === "message" && data && data.id !== undefined) {
+    renderMessage(data);
+    bumpSince(data.id);
+  } else if (type === "delete" && data && data.id !== undefined) {
+    markDeleted(data.id);
+    bumpSince(data.id);
+  } else if (type === "presence" && data) {
+    $("online").textContent = String(data.online);
+  } else if (type === "ban") {
+    setStatus("本机已被禁言（禁发不禁看）", "bad");
+    notice("封禁提示：" + ((data && data.reason) || "本机 IP 已被禁言"));
+  } else if (type === "notice" && data && data.kind === "history_mode") {
+    notice("服务端通知：持久化模式 → " + data.mode + "（保留 " + String(data.retention_days) + " 天）");
+  } else if (type === "error") {
+    notice("流错误：" + ((data && data.message) || JSON.stringify(data)), true);
+  }
+}
+
+// 纯数字 id 才算续传下界（跳过 "e<eventId>" 直播 id）：since 单调推进，方向安全——since 是
+// 保守下界，重连重复回放由 seen Map 去重吸收、不会丢事件；runStream 对过期游标还有回退保护。
+function bumpSince(id) {
+  const n = Number(id);
+  if (Number.isInteger(n) && n > since) since = n;
+}
+
+function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+$("send").onclick = send;
+$("text").addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
+$("nick").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); $("text").focus(); } });
+$("selfBan").onclick = async () => {
+  const ip = $("selfIp").textContent;
+  if (!ip || ip.indexOf("…") >= 0) { alert("尚未取得本机 IP"); return; }
+  try {
+    const res = await fetch("/api/admin/login", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ secret: $("secret").value }),
+    });
+    const j = await res.json().catch(() => null);
+    if (!res.ok) { alert("登录失败：" + ((j && j.error && j.error.message) || res.status)); return; }
+    const res2 = await fetch("/api/admin/bans", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ip, reason: "demo 自测封禁" }),
+    });
+    const j2 = await res2.json().catch(() => null);
+    if (!res2.ok) { alert("封禁失败：" + ((j2 && j2.error && j2.error.message) || res2.status)); return; }
+    alert("已封禁本机 IP " + ip + "（禁言不禁看：接下来发言会收到 403，观看不受影响）。可在管理页解封。");
+  } catch (e) { alert("请求异常：" + e.message); }
+};
+
+(async () => {
+  try {
+    const meta = await fetch("/api/meta").then((r) => r.json());
+    $("ip").textContent = meta.client_ip || "未知";
+    if (meta.limits) {
+      $("nick").maxLength = meta.limits.nick_max || 24;
+      $("text").maxLength = meta.limits.text_max || 1000;
+    }
+    if (meta.presence) $("selfIp").textContent = meta.client_ip || "未知";
+  } catch {}
+  await loadHistory();
+  connect();
+})();
+</script>
+</body>
+</html>

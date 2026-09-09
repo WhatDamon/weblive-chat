@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>weblive-chat 管理</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif; margin: 0; background: #f4f5f7; color: #1c1e21; }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 16px; }
+  header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  h1 { font-size: 20px; margin: 0; }
+  a { color: #0a66c2; }
+  .card { background: #fff; border: 1px solid #d9dbe0; border-radius: 8px; padding: 14px; margin: 14px 0; }
+  .card h2 { font-size: 15px; margin: 0 0 10px; }
+  .row { display: flex; gap: 8px; margin: 8px 0; flex-wrap: wrap; align-items: center; }
+  input[type=text], input[type=password] { padding: 6px 8px; border: 1px solid #c4c7cc; border-radius: 6px; min-width: 180px; }
+  button { padding: 6px 12px; border: 1px solid #c4c7cc; background: #f0f1f3; border-radius: 6px; cursor: pointer; }
+  button:hover { background: #e4e6e9; }
+  button.primary { background: #0a66c2; border-color: #0a66c2; color: #fff; }
+  button.danger { background: #c0392b; border-color: #c0392b; color: #fff; }
+  li { margin: 4px 0; }
+  .del { color: #999; font-style: italic; }
+  .muted { color: #666; font-size: 13px; }
+  #login { display: block; }
+  #panels { display: none; }
+  pre.stats { margin: 4px 0; font-size: 13px; white-space: pre-wrap; }
+  ul { margin: 6px 0; padding-left: 20px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>weblive-chat 管理</h1>
+    <span class="muted" id="myip"></span>
+    <a href="/demo.html">← 返回 Demo</a>
+  </header>
+
+  <div id="login" class="card">
+    <h2>管理员登录</h2>
+    <p class="muted">口令即部署时配置的环境变量 <code>ADMIN_SECRET</code>（未设置时生产环境拒绝启动；本地开发为 dev-insecure-secret）。登录后会话经 HttpOnly Cookie 保存，页面不落盘口令。</p>
+    <div class="row">
+      <input type="password" id="secret" placeholder="ADMIN_SECRET 口令" autocomplete="current-password">
+      <button class="primary" id="loginBtn">登录</button>
+    </div>
+  </div>
+
+  <div id="panels">
+    <div class="card">
+      <h2>运行状态 <span class="muted" id="stateHint"></span></h2>
+      <pre class="stats" id="stats"></pre>
+      <div class="row"><button id="statsBtn">刷新状态</button></div>
+    </div>
+
+    <div class="card">
+      <h2>IP 封禁 <span class="muted">（禁言不禁看：被封 IP 不能发言，但可继续观看）</span></h2>
+      <div class="row">
+        <input type="text" id="banIp" placeholder="IP，如 1.2.3.4" title="封禁本机请用下方按钮或手动粘贴上文本机 IP">
+        <input type="text" id="banReason" placeholder="原因（可选）">
+        <button class="primary" id="banBtn">封禁</button>
+        <button id="selfBanBtn">封禁本机 IP（<span id="selfIp">…</span>）</button>
+      </div>
+      <ul id="bans"></ul>
+    </div>
+
+    <div class="card">
+      <h2>最近消息 <span class="muted">（可删除；删除为软删占位，全员实时同步）</span></h2>
+      <ul id="msgs"></ul>
+      <div class="row"><button id="msgsBtn">刷新消息</button></div>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, { ...opts, headers: { "content-type": "application/json", ...(opts.headers || {}) } });
+  if (!res.ok) {
+    let msg = res.status + " " + res.statusText;
+    try { const j = await res.json(); msg = (j && j.error && j.error.message) || msg; } catch {}
+    throw new Error(msg);
+  }
+  return res.status === 204 ? null : res.json();
+}
+const alertErr = (e) => alert("操作失败：" + e.message);
+
+async function refreshAuth() {
+  try {
+    await api("/api/admin/me");
+    $("login").style.display = "none";
+    $("panels").style.display = "block";
+    refreshAll();
+    return true;
+  } catch {
+    $("login").style.display = "block";
+    $("panels").style.display = "none";
+    return false;
+  }
+}
+
+async function refreshAll() {
+  refreshStats();
+  refreshBans();
+  refreshMsgs();
+}
+
+async function refreshStats() {
+  try {
+    const s = await api("/api/admin/stats");
+    $("stats").textContent =
+      "在线人数：" + s.online +
+      "\n消息总数：" + s.messages_total + "（保留 " + s.messages_retained + "）" +
+      "\n持久化模式：" + s.history.mode + "，保留 " + s.history.retention_days + " 天" +
+      "\n估算占用：" + (s.history.estimate_bytes / 1048576).toFixed(2) + " MB";
+    $("stateHint").textContent = "刷新于 " + new Date().toLocaleTimeString();
+  } catch (e) { $("stats").textContent = "读取失败：" + e.message; }
+}
+
+async function refreshBans() {
+  try {
+    const j = await api("/api/admin/bans?limit=100");
+    const ul = $("bans");
+    ul.textContent = "";
+    for (const b of j.bans) {
+      const li = document.createElement("li");
+      const txt = document.createElement("span");
+      txt.textContent = b.ip + (b.reason ? "（" + b.reason + "）" : "") + " — " + new Date(b.created_at).toLocaleString();
+      const del = document.createElement("button");
+      del.textContent = "解封";
+      del.className = "danger";
+      del.style.marginLeft = "8px";
+      del.onclick = async () => { try { await api("/api/admin/bans/" + encodeURIComponent(b.ip), { method: "DELETE" }); refreshBans(); } catch (e2) { alertErr(e2); } };
+      li.append(txt, del);
+      ul.append(li);
+    }
+    if (!j.bans.length) ul.append(Object.assign(document.createElement("li"), { className: "muted", textContent: "（暂无封禁）" }));
+  } catch (e) { alertErr(e); }
+}
+
+async function refreshMsgs() {
+  try {
+    const j = await api("/api/messages?limit=20");
+    const ul = $("msgs");
+    ul.textContent = "";
+    for (const m of j.messages) {
+      const li = document.createElement("li");
+      const who = document.createElement("b");
+      who.textContent = m.nick + "：";
+      const when = document.createElement("span");
+      when.className = "muted";
+      when.textContent = " " + new Date(m.created_at).toLocaleString() + " ";
+      const body = document.createElement("span");
+      if (m.deleted) { body.className = "del"; body.textContent = "（已删除）"; }
+      else body.textContent = m.text;
+      const rm = document.createElement("button");
+      rm.textContent = "删除";
+      rm.style.marginLeft = "8px";
+      rm.disabled = m.deleted;
+      rm.onclick = async () => { try { await api("/api/admin/messages/" + m.id, { method: "DELETE" }); refreshMsgs(); } catch (e2) { alertErr(e2); } };
+      li.append(who, when, body, rm);
+      ul.append(li);
+    }
+    if (!j.messages.length) ul.append(Object.assign(document.createElement("li"), { className: "muted", textContent: j.mode === "ephemeral" ? "（仅实时模式：历史已停止写入）" : "（暂无消息）" }));
+  } catch (e) { alertErr(e); }
+}
+
+$("loginBtn").onclick = async () => {
+  try {
+    await api("/api/admin/login", { method: "POST", body: JSON.stringify({ secret: $("secret").value }) });
+    $("secret").value = "";
+    await refreshAuth();
+  } catch (e) { alertErr(e); }
+};
+$("secret").addEventListener("keydown", (e) => { if (e.key === "Enter") $("loginBtn").onclick(); });
+$("statsBtn").onclick = refreshStats;
+$("msgsBtn").onclick = refreshMsgs;
+$("banBtn").onclick = async () => {
+  const ip = $("banIp").value.trim();
+  if (!ip) { alert("请填写 IP"); return; }
+  try {
+    await api("/api/admin/bans", { method: "POST", body: JSON.stringify({ ip, reason: $("banReason").value.trim() }) });
+    $("banIp").value = ""; $("banReason").value = "";
+    refreshBans();
+  } catch (e) { alertErr(e); }
+};
+$("selfBanBtn").onclick = async () => {
+  const ip = $("selfIp").textContent;
+  if (!ip || ip.indexOf("…") >= 0) { alert("尚未取得本机 IP（本页需经服务端代理访问）"); return; }
+  try {
+    await api("/api/admin/bans", { method: "POST", body: JSON.stringify({ ip, reason: "管理页自测封禁" }) });
+    refreshBans();
+  } catch (e) { alertErr(e); }
+};
+
+(async () => {
+  try {
+    const meta = await api("/api/meta");
+    $("selfIp").textContent = meta.client_ip || "未知";
+    $("myip").textContent = "本机 IP：" + (meta.client_ip || "未知");
+  } catch {}
+  await refreshAuth();
+})();
+</script>
+</body>
+</html>
