@@ -1,6 +1,6 @@
 import { describe, expect, test, afterEach } from "bun:test";
 import { makeApp } from "../helpers";
-let cleanups: (() => Promise<void>)[] = [];
+const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { while (cleanups.length) await cleanups.pop()!(); });
 const boot = async () => { const h = await makeApp(); cleanups.push(h.cleanup); return h; };
 
