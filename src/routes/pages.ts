@@ -7,7 +7,11 @@ const readPublic = async (file: string) => {
   return readFile(join(process.cwd(), "public", file), "utf8");
 };
 
-const serve = async (c: import("hono").Context, file: string, label: string) => {
+const serve = async (
+  c: import("hono").Context,
+  file: string,
+  label: string,
+) => {
   try {
     return c.html(await readPublic(file));
   } catch {

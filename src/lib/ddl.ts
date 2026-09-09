@@ -1,7 +1,10 @@
 import type { Provider } from "./config";
 
 export function ddlFor(provider: Provider): readonly string[] {
-  const idCol = provider === "sqlite" ? "id INTEGER PRIMARY KEY AUTOINCREMENT" : "id serial PRIMARY KEY";
+  const idCol =
+    provider === "sqlite"
+      ? "id INTEGER PRIMARY KEY AUTOINCREMENT"
+      : "id serial PRIMARY KEY";
   const int = provider === "sqlite" ? "INTEGER" : "bigint";
   return [
     `CREATE TABLE IF NOT EXISTS messages (

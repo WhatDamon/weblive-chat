@@ -84,11 +84,7 @@ describe("performMaintenance", () => {
       },
       historyBefore: async () => {
         order.push("historyBefore");
-        return [
-          { id: 102 },
-          { id: 101 },
-          { id: 100 },
-        ]; // 排序约定 id DESC（最新在前）
+        return [{ id: 102 }, { id: 101 }, { id: 100 }]; // 排序约定 id DESC（最新在前）
       },
       trimMessagesBelow: async (f: number) => {
         order.push("trimMessagesBelow");

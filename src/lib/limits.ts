@@ -1,7 +1,13 @@
-export interface RateSink { rateHit(bucket: string, scope: string, windowStart: number): Promise<number> }
+export interface RateSink {
+  rateHit(bucket: string, scope: string, windowStart: number): Promise<number>;
+}
 
 export async function rateCheck(
-  repo: RateSink, bucket: string, scope: string, limitPerMin: number, now: number = Date.now(),
+  repo: RateSink,
+  bucket: string,
+  scope: string,
+  limitPerMin: number,
+  now: number = Date.now(),
 ): Promise<{ allowed: boolean; count: number; retryAfterMs: number }> {
   const windowMs = 60_000;
   const windowStart = Math.floor(now / windowMs) * windowMs;

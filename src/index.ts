@@ -7,23 +7,23 @@ import type { Hono } from "hono";
  */
 let state: { app: Hono } | null = null;
 const getApp = async () => {
-  state ??= { app: (await buildApp()).app };
-  return state.app;
+ state ??= { app: (await buildApp()).app };
+ return state.app;
 };
 
 if (import.meta.main) {
-  const { cfg, app } = await buildApp();
-  const server = Bun.serve({
-    port: cfg.port,
-    fetch: app.fetch,
-    // Bun.serve idleTimeout 上限 255s（计划写 300 会被 Bun 拒绝——简报硬伤）。
-    // SSE 流长连依赖 runStream 心跳（空闲 >heartbeatMs=15s 发 ": ping"）保活，
-    // 本项只是兜底，须 >heartbeatMs 防误杀，故取 Bun 允许最大值 255。
-    idleTimeout: 255,
-  });
-  console.log(
-    `weblive-chat dev server → http://localhost:${server.port}/demo.html`,
-  );
+ const { cfg, app } = await buildApp();
+ const server = Bun.serve({
+  port: cfg.port,
+  fetch: app.fetch,
+  // Bun.serve idleTimeout 上限 255s（计划写 300 会被 Bun 拒绝——简报硬伤）。
+  // SSE 流长连依赖 runStream 心跳（空闲 >heartbeatMs=15s 发 ": ping"）保活，
+  // 本项只是兜底，须 >heartbeatMs 防误杀，故取 Bun 允许最大值 255。
+  idleTimeout: 255,
+ });
+ console.log(
+  `weblive-chat dev server → http://localhost:${server.port}/demo.html`,
+ );
 }
 
 /**
@@ -36,4 +36,4 @@ if (import.meta.main) {
  * 云端上线验收（vercel deploy 后 SSE 300s 重连等）记入规格 §10 回归清单，不阻塞本地验收。
  */
 export default async (req: Request): Promise<Response> =>
-  (await getApp()).fetch(req);
+ (await getApp()).fetch(req);

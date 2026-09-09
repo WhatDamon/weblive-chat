@@ -140,7 +140,12 @@ export function registerAdmin(app: Hono, d: AdminDeps) {
     if (!ip) return jsonError(c, 400, "invalid_body", { message: "ip 不合法" });
     try {
       // 幂等 upsert（Ruling B）：重复封禁 → 覆盖 reason 并回报 created:false（非 409）
-      const created = await repo.banUpsert(ip, reason || "（未填写原因）", "admin", Date.now());
+      const created = await repo.banUpsert(
+        ip,
+        reason || "（未填写原因）",
+        "admin",
+        Date.now(),
+      );
       return c.json({ created, ip });
     } catch {
       return jsonError(c, 503, "db_unavailable");
@@ -166,11 +171,7 @@ export function registerAdmin(app: Hono, d: AdminDeps) {
       const ok = await repo.softDeleteMessage(id, "admin", now);
       if (!ok) return jsonError(c, 404, "not_found");
       // 软删占位广播：delete 事件（payload 只含消息 id，无操作者 IP——隐私约束）
-      await repo.insertEvent(
-        "delete",
-        JSON.stringify({ id: String(id) }),
-        now,
-      );
+      await repo.insertEvent("delete", JSON.stringify({ id: String(id) }), now);
       return c.body(null, 204);
     } catch {
       return jsonError(c, 503, "db_unavailable");

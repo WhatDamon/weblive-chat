@@ -105,7 +105,8 @@ export async function readSse(
       let data: any = null;
       for (const line of lines) {
         if (line.startsWith("event:")) type = line.slice(6).trim();
-        else if (line.startsWith("data:")) data = JSON.parse(line.slice(5).trim());
+        else if (line.startsWith("data:"))
+          data = JSON.parse(line.slice(5).trim());
       }
       if (data !== null) out.push({ type, data });
       if (waitFor(type, data)) {
