@@ -517,11 +517,235 @@ class PostgresRepo implements Repo {
   }
 }
 
+/**
+ * 纯内存驱动（DB_PROVIDER=memory）：无外部依赖、不持久化、单线程内原子（方法内无 await →
+ * 无并发交错，等价 sqlite 事务双写）。语义逐方法镜像 sqlite 实现（排序/裁剪/口径/事件载荷）。
+ * 仅限本地/单实例演示与测试 —— Vercel/Serverless 多实例无共享内存，生产由 loadConfig 拒绝。
+ */
+interface MemMessage {
+  id: number;
+  client_id: string;
+  nick: string;
+  text: string;
+  created_at: number;
+  deleted_at: number | null;
+  deleted_by: string | null;
+}
+interface MemEvent {
+  id: number;
+  type: string;
+  payload: string;
+  created_at: number;
+}
+class MemoryRepo implements Repo {
+  readonly provider = "memory" as const;
+  private msgSeq = 0;
+  private evSeq = 0;
+  private messages: MemMessage[] = [];
+  private events: MemEvent[] = [];
+  private presence = new Map<string, number>();
+  private bans = new Map<
+    string,
+    { reason: string; banned_by: string; created_at: number }
+  >();
+  private rates = new Map<string, number>();
+
+  async bootstrap(): Promise<void> {
+    // 无 schema
+  }
+  async close(): Promise<void> {
+    // 无连接
+  }
+
+  async sendMessageAndEvent(
+    m: MessageInput,
+  ): Promise<{ messageId: number; eventId: number }> {
+    const messageId = ++this.msgSeq;
+    this.messages.push({
+      id: messageId,
+      client_id: m.client_id,
+      nick: m.nick,
+      text: m.text,
+      created_at: m.created_at,
+      deleted_at: null,
+      deleted_by: null,
+    });
+    // 事件载荷由实现在拿到 messageId 后自动构造（同 sqlite/pg：含 id 供客户端去重/对应 delete）
+    const eventId = ++this.evSeq;
+    this.events.push({
+      id: eventId,
+      type: "message",
+      payload: JSON.stringify({
+        id: String(messageId),
+        client_id: m.client_id,
+        nick: m.nick,
+        text: m.text,
+        created_at: m.created_at,
+      }),
+      created_at: m.created_at,
+    });
+    return { messageId, eventId };
+  }
+
+  async publishEphemeralMessage(m: MessageInput): Promise<{ eventId: number }> {
+    const eventId = ++this.evSeq;
+    this.events.push({
+      id: eventId,
+      type: "message",
+      payload: JSON.stringify({
+        id: `e${eventId}`, // 避开 messages.id 命名空间（同 sqlite/pg 实现）
+        client_id: m.client_id,
+        nick: m.nick,
+        text: m.text,
+        created_at: m.created_at,
+      }),
+      created_at: m.created_at,
+    });
+    return { eventId };
+  }
+
+  async insertEvent(
+    type: string,
+    payload: string,
+    created_at: number,
+  ): Promise<number> {
+    const eventId = ++this.evSeq;
+    this.events.push({ id: eventId, type, payload, created_at });
+    return eventId;
+  }
+  async eventsSince(since: number, limit: number): Promise<EventRow[]> {
+    // events 按 id 递增 push → 过滤保持旧→新序，等价 SQL ORDER BY id ASC LIMIT
+    return this.events
+      .filter((e) => e.id > since)
+      .slice(0, limit)
+      .map(mapEvent);
+  }
+  async eventsMaxId(): Promise<number> {
+    return this.events.length ? this.events[this.events.length - 1].id : 0;
+  }
+  async historyBefore(before: number, limit: number): Promise<MessageRow[]> {
+    return this.messages
+      .filter((r) => r.id < before)
+      .sort((a, b) => b.id - a.id) // 新→旧，等价 ORDER BY id DESC
+      .slice(0, limit)
+      .map(mapMessage);
+  }
+  async historySince(since: number, limit: number): Promise<MessageRow[]> {
+    return this.messages
+      .filter((r) => r.id > since)
+      .sort((a, b) => a.id - b.id)
+      .slice(0, limit)
+      .map(mapMessage);
+  }
+  async softDeleteMessage(
+    id: number,
+    by: string,
+    at: number,
+  ): Promise<boolean> {
+    const row = this.messages.find((r) => r.id === id && r.deleted_at === null);
+    if (!row) return false;
+    row.deleted_at = at;
+    row.deleted_by = by;
+    row.text = ""; // 同 sqlite：清 text（mapMessage 依 deleted_at 归 null/deleted）
+    return true;
+  }
+  async banUpsert(
+    ip: string,
+    reason: string,
+    by: string,
+    at: number,
+  ): Promise<boolean> {
+    const existed = this.bans.has(ip);
+    this.bans.set(ip, { reason, banned_by: by, created_at: at });
+    return !existed;
+  }
+  async banGet(
+    ip: string,
+  ): Promise<{ reason: string; created_at: number } | null> {
+    const b = this.bans.get(ip);
+    return b ? { reason: b.reason, created_at: b.created_at } : null;
+  }
+  async banList(limit: number, offset: number): Promise<BanRow[]> {
+    // created_at DESC；同刻 tie-break ip DESC（确定性，优于 sqlite 未定义序）
+    return [...this.bans.entries()]
+      .map(([ip, b]) => ({ ip, reason: b.reason, created_at: b.created_at }))
+      .sort(
+        (a, b) =>
+          b.created_at - a.created_at || (a.ip < b.ip ? 1 : a.ip > b.ip ? -1 : 0),
+      )
+      .slice(offset, offset + limit);
+  }
+  async banRemove(ip: string): Promise<boolean> {
+    return this.bans.delete(ip);
+  }
+  async presenceUpsert(clientId: string, at: number): Promise<void> {
+    this.presence.set(clientId, at);
+  }
+  async presenceCount(cutoff: number): Promise<number> {
+    let n = 0;
+    for (const at of this.presence.values()) if (at > cutoff) n++;
+    return n;
+  }
+  async rateHit(
+    bucket: string,
+    scope: string,
+    windowStart: number,
+  ): Promise<number> {
+    const k = `${bucket}\u0000${scope}\u0000${windowStart}`;
+    const count = (this.rates.get(k) ?? 0) + 1;
+    this.rates.set(k, count);
+    return count;
+  }
+  async messageStats(): Promise<{ total: number; retained: number }> {
+    // 物理行口径（同 sqlite/pg）：软删不删行 → total/retained 恒等
+    const total = this.messages.length;
+    return { total, retained: total };
+  }
+  async cleanupEvents(before: number): Promise<number> {
+    const len = this.events.length;
+    this.events = this.events.filter((e) => e.created_at >= before);
+    return len - this.events.length;
+  }
+  async cleanupPresence(before: number): Promise<number> {
+    let n = 0;
+    for (const [k, v] of this.presence) {
+      if (v < before) {
+        this.presence.delete(k);
+        n++;
+      }
+    }
+    return n;
+  }
+  async cleanupRateLimits(before: number): Promise<number> {
+    let n = 0;
+    for (const k of this.rates.keys()) {
+      if (Number(k.split("\u0000")[2]) < before) {
+        this.rates.delete(k);
+        n++;
+      }
+    }
+    return n;
+  }
+  async trimMessagesBelow(idFloor: number): Promise<number> {
+    const len = this.messages.length;
+    this.messages = this.messages.filter((r) => r.id >= idFloor);
+    return len - this.messages.length;
+  }
+  async deleteMessagesOlderThan(cutoff: number): Promise<number> {
+    const len = this.messages.length;
+    this.messages = this.messages.filter((r) => r.created_at >= cutoff);
+    return len - this.messages.length;
+  }
+}
+
 export async function createRepo(
   provider: Provider,
   databaseUrl: string,
   authToken?: string,
 ): Promise<Repo> {
+  if (provider === "memory") {
+    return new MemoryRepo();
+  }
   if (provider === "sqlite") {
     return new SqliteRepo(createClient({ url: databaseUrl, authToken }));
   }

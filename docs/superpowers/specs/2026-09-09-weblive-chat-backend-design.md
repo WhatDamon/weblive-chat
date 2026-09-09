@@ -142,10 +142,13 @@ rate_limits (
 | 用途 | `DB_PROVIDER` | `DATABASE_URL` | Vercel 生产可用 |
 |---|---|---|---|
 | 本地开发 / 测试 | `sqlite` | `file:./data/dev.db` | —（仅本机） |
+| 本地纯内存演示 / 测试（重启即空） | `memory` | 无需（忽略） | ❌（仅单实例） |
 | 生产 SQLite | `sqlite` | `libsql://…`（Turso） | ✅（远程） |
 | 生产 / 自托管 Postgres | `postgres` | `postgres://…`（Neon / Supabase / 自建） | ✅ |
 
 > ⚠️ **Vercel 函数文件系统是临时的** —— `file:` 型 SQLite 只能用于本地开发与测试，**禁止作为 Vercel 生产存储**；生产 SQLite 必须走远程（Turso 等）。
+>
+> ⚠️ **`memory` 模式（实现期新增，见 §11）** —— 进程内实现 Repo 接口（无外部依赖、零持久化、重启即空），仅供本地/单实例演示与测试。Serverless 多函数实例无共享内存，跨实例收不到彼此消息且数据随实例回收——**不适用于 Vercel/生产**，`NODE_ENV=production` 下设置 `DB_PROVIDER=memory` 直接拒绝启动。
 
 **可移植性规则**（D11）：
 

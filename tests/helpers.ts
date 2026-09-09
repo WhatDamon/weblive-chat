@@ -4,16 +4,27 @@ import { join } from "node:path";
 import { createRepo } from "../src/lib/repo";
 import type { Repo } from "../src/lib/repo";
 import { createApp } from "../src/app";
-import type { AppConfig } from "../src/lib/config";
+import type { AppConfig, Provider } from "../src/lib/config";
 
-export async function makeRepo(): Promise<{
+export type TestProvider = Provider;
+
+export async function makeRepo(
+  explicit?: TestProvider,
+): Promise<{
   repo: Repo;
   cleanup: () => Promise<void>;
 }> {
+  const provider = (explicit ??
+    process.env.DB_PROVIDER ??
+    "sqlite") as TestProvider;
+  if (provider === "memory") {
+    // 纯内存：无文件可清理
+    const repo = await createRepo("memory", "");
+    await repo.bootstrap();
+    return { repo, cleanup: async () => repo.close() };
+  }
   const dir = mkdtempSync(join(tmpdir(), "wl-test-"));
   const url = `file:${join(dir, "test.db")}`;
-  const provider =
-    (process.env.DB_PROVIDER as "sqlite" | "postgres") ?? "sqlite";
   const realUrl = provider === "sqlite" ? url : process.env.DATABASE_URL!;
   const repo = await createRepo(provider, realUrl);
   await repo.bootstrap();
@@ -58,7 +69,24 @@ export function testCfg(over: Partial<AppConfig> = {}): AppConfig {
   };
 }
 
-export async function makeApp(over: Partial<AppConfig> = {}) {
+export async function makeApp(
+  over: Partial<AppConfig> = {},
+  provider: TestProvider = "sqlite",
+) {
+  if (provider === "memory") {
+    const cfg = testCfg({ ...over, dbProvider: "memory", databaseUrl: "" });
+    const repo = await createRepo("memory", "");
+    await repo.bootstrap();
+    const app = createApp({ cfg, repo });
+    return {
+      cfg,
+      app,
+      repo,
+      cleanup: async () => {
+        await repo.close();
+      },
+    };
+  }
   const dir = mkdtempSync(join(tmpdir(), "wl-app-"));
   // cfg 与 repo 共用同一目录同一库文件，避免 testCfg 每 boot 泄漏空 /tmp 目录
   const cfg = testCfg({ ...over, databaseUrl: `file:${join(dir, "t.db")}` });

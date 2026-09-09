@@ -56,8 +56,8 @@ bun run dev                   # http://localhost:3000
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `DB_PROVIDER` | `sqlite` | `sqlite` ｜ `postgres` |
-| `DATABASE_URL` | `file:./data/dev.db` | 见下「存储形态」；`postgres` 时必须为 `postgres://…` |
+| `DB_PROVIDER` | `sqlite` | `sqlite` ｜ `postgres` ｜ `memory` |
+| `DATABASE_URL` | `file:./data/dev.db` | 见下「存储形态」；`postgres` 时必须为 `postgres://…`；`memory` 时忽略 |
 | `TURSO_AUTH_TOKEN` | 空 | 仅 Turso（`libsql://`）需要 |
 | `DB_MIGRATE_ON_BOOT` | `true` | 启动幂等建表（`CREATE TABLE IF NOT EXISTS`）；`"false"` 关闭 |
 | `ADMIN_SECRET` | 开发回退 `dev-insecure-secret` | 管理口令；**生产（`NODE_ENV=production`）缺失即拒绝启动** |
@@ -85,8 +85,11 @@ bun run dev                   # http://localhost:3000
 | 用途 | `DB_PROVIDER` | `DATABASE_URL` |
 |---|---|---|
 | 本地开发 / 测试 | `sqlite` | `file:./data/dev.db` |
+| 本地纯内存演示 / 测试（不持久化） | `memory` | 无需（忽略） |
 | 生产 SQLite | `sqlite` | `libsql://<db>-<org>.turso.io` + `TURSO_AUTH_TOKEN` |
 | 生产 / 自托管 Postgres | `postgres` | `postgres://user:pass@host:5432/db?sslmode=require` |
+
+> ⚠️ **`memory` 模式仅限本地/单实例演示与测试**：数据在进程内存、重启即空、无跨实例共享。**不适用于 Vercel/Serverless 生产**——多函数实例间收不到彼此消息且数据随实例回收；`NODE_ENV=production` 下设置 `DB_PROVIDER=memory` 会直接拒绝启动。
 
 > ⚠️ **Vercel 函数文件系统是临时的**：`file:` 型 SQLite 只能用于本地，**禁止作为 Vercel 生产存储**（数据会随实例回收丢失）。生产 SQLite 必须走远程 Turso。
 >

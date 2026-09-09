@@ -45,4 +45,21 @@ describe("loadConfig", () => {
     });
     expect(cfg.allowedOrigins).toEqual(["https://a.com", "https://b.com"]);
   });
+
+  test("DB_PROVIDER=memory：无需 DATABASE_URL，供本地/单实例纯内存演示", () => {
+    const cfg = loadConfig({ ...base, DB_PROVIDER: "memory" });
+    expect(cfg.dbProvider).toBe("memory");
+    expect(cfg.databaseUrl).toBe("");
+    expect(cfg.adminSecret.length).toBeGreaterThan(0); // 非生产仍可用 dev 回退
+  });
+
+  test("DB_PROVIDER=memory + 生产环境抛错（不适用于 Vercel/Serverless）", () => {
+    expect(() =>
+      loadConfig({
+        NODE_ENV: "production",
+        DB_PROVIDER: "memory",
+        ADMIN_SECRET: "s3cret",
+      }),
+    ).toThrow(/memory/);
+  });
 });
