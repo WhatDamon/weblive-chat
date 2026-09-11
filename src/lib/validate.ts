@@ -1,3 +1,5 @@
+import { buildWordFilter, type WordFilter } from "./wordfilter";
+
 export const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const validUuid = (s: string) => UUID_RE.test(s);
@@ -23,7 +25,12 @@ export type MsgErr =
   | { ok: true; nick: string; text: string };
 
 export function validateMessageBody(
-  cfg: { nickMax: number; textMax: number; bannedWords: string[] },
+  cfg: {
+    nickMax: number;
+    textMax: number;
+    bannedWords: string[];
+    filter?: WordFilter;
+  },
   body: unknown,
 ): MsgErr {
   const b = (body ?? {}) as Record<string, unknown>;
@@ -65,14 +72,27 @@ export function validateMessageBody(
       field: "text",
       message: `内容最长 ${cfg.textMax} 字`,
     };
-  const lower = text.toLowerCase();
-  const hit = cfg.bannedWords.find((w) => w && lower.includes(w.toLowerCase()));
+  const matcher = cfg.filter ?? matcherFor(cfg.bannedWords);
+  const textHit = matcher.scan(text) ? ("text" as const) : null;
+  const hit = textHit ?? (matcher.scan(nick) ? ("nick" as const) : null);
   if (hit)
     return {
       ok: false,
       code: "banned_word",
-      field: "text",
+      field: hit,
       message: "内容含违禁词",
     };
   return { ok: true, nick, text };
+}
+
+// 未注入词库（单测/直接调用）时按显式词表即时建树，并按词表内容缓存复用
+const matcherCache = new Map<string, WordFilter>();
+function matcherFor(words: readonly string[]): WordFilter {
+  const key = words.join("\u0000");
+  let m = matcherCache.get(key);
+  if (!m) {
+    m = buildWordFilter(words);
+    matcherCache.set(key, m);
+  }
+  return m;
 }

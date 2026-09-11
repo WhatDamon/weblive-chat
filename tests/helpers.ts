@@ -48,6 +48,10 @@ export function testCfg(over: Partial<AppConfig> = {}): AppConfig {
     nickMax: 24,
     textMax: 1000,
     bannedWords: ["赌博"],
+    // 测试默认关闭词库（不依赖仓库 data/ 目录），需要时用 over 注入 mode/dir
+    bannedWordsMode: "off",
+    bannedWordsDir: join(tmpdir(), "wl-no-words"),
+    bannedWordsAllow: [],
     retentionDays: 90,
     maxRows: 500_000,
     backfillMax: 0,

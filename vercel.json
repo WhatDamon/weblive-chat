@@ -4,7 +4,7 @@
     {
       "src": "src/index.ts",
       "use": "@vercel/node",
-      "config": { "maxDuration": 300, "includeFiles": ["public/**"] }
+      "config": { "maxDuration": 300, "includeFiles": ["public/**", "data/**"] }
     }
   ],
   "routes": [{ "src": "/(.*)", "dest": "src/index.ts" }]

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { join } from "node:path";
 import { loadConfig } from "../../src/lib/config";
 
 const base = { NODE_ENV: "test", ADMIN_SECRET: "s3cret" };
@@ -61,5 +62,24 @@ describe("loadConfig", () => {
         ADMIN_SECRET: "s3cret",
       }),
     ).toThrow(/memory/);
+  });
+
+  test("违禁词库：默认 basic + 内置目录，模式/目录/白名单可覆盖，非法模式抛错", () => {
+    const cfg = loadConfig({ ...base });
+    expect(cfg.bannedWordsMode).toBe("basic");
+    expect(cfg.bannedWordsDir).toBe(join(process.cwd(), "data/banned"));
+    expect(cfg.bannedWordsAllow).toEqual([]);
+    const over = loadConfig({
+      ...base,
+      BANNED_WORDS_MODE: "strict",
+      BANNED_WORDS_DIR: "/tmp/words",
+      BANNED_WORDS_ALLOW: "赌博合法, 抽奖活动 ",
+    });
+    expect(over.bannedWordsMode).toBe("strict");
+    expect(over.bannedWordsDir).toBe("/tmp/words");
+    expect(over.bannedWordsAllow).toEqual(["赌博合法", "抽奖活动"]);
+    expect(() => loadConfig({ ...base, BANNED_WORDS_MODE: "loose" })).toThrow(
+      /BANNED_WORDS_MODE/,
+    );
   });
 });

@@ -7,6 +7,7 @@ import { validateMessageBody, validUuid } from "../lib/validate";
 import { rateCheck } from "../lib/limits";
 import { runStream } from "../lib/stream";
 import { parseIdParam, jsonError, readJson } from "../lib/http";
+import type { WordFilter } from "../lib/wordfilter";
 
 export interface ChatDeps {
   cfg: AppConfig;
@@ -16,6 +17,8 @@ export interface ChatDeps {
   maintain?: (
     now?: number,
   ) => Promise<{ mode: HistoryMode; retentionDays: number }>;
+  /** 违禁词库（懒加载）；缺省时回退到 cfg.bannedWords 显式词表 */
+  getFilter?: () => Promise<WordFilter>;
 }
 
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -32,8 +35,8 @@ export function registerChat(app: Hono, d: ChatDeps) {
   const { cfg, repo } = d;
 
   /**
-   * 信任边界（T3/C2）：X-Forwarded-For 仅可信代理直连（Vercel 注入）时方可采信；
-   * devIp 只在无代理的本地开发回退，生产按 XFF 首跳规范化。前端不可直改本字段内容以外任何链。
+   * 信任边界：X-Forwarded-For 仅在可信代理直连（Vercel 注入）时方可采信；
+   * devIp 只在无代理的本地开发回退，生产按 XFF 首跳规范化。
    */
   const ipOf = (c: Context) =>
     clientIpFromHeaders(
@@ -98,7 +101,8 @@ export function registerChat(app: Hono, d: ChatDeps) {
     const body = await readJson(c);
     if (!body) return jsonError(c, 400, "invalid_body");
     // 纯校验先行：禁词/格式错误不消耗限流预算（与 app.chat 限流用例的语义一致），也不触发 DB 读
-    const v = validateMessageBody(cfg, body);
+    const filter = d.getFilter ? await d.getFilter() : undefined;
+    const v = validateMessageBody(filter ? { ...cfg, filter } : cfg, body);
     if (!v.ok) return jsonError(c, 400, v.code);
     try {
       const ban = await repo.banGet(ip);

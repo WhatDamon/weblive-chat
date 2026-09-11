@@ -66,7 +66,10 @@ bun run dev                   # http://localhost:3000
 | `REQUIRE_ORIGIN` | `0` | `1` 时无 Origin 的直连（curl/脚本）也拒绝（`403 missing_origin`） |
 | `NICK_MAX` | `24` | 昵称最大字符数 |
 | `TEXT_MAX` | `1000` | 消息内容最大字符数 |
-| `BANNED_WORDS` | 空 | 逗号分隔禁词（**子串匹配**） |
+| `BANNED_WORDS_MODE` | `basic` | 违禁词库启用范围：`off`（仅显式词）/ `basic`（内置精选词表）/ `strict`（再加载 `data/banned/strict/`） |
+| `BANNED_WORDS_DIR` | `<cwd>/data/banned` | 词库目录；`basic/` 必选，`strict/` 仅 strict 模式加载 |
+| `BANNED_WORDS` | 空 | 显式追加禁词（逗号分隔，与词库合并） |
+| `BANNED_WORDS_ALLOW` | 空 | 白名单：命中区间被其覆盖时豁免，如 `赌博合法` |
 | `HISTORY_RETENTION_DAYS` | `90` | 历史保留天数上限（自动逐级收缩 90→30→10→3→1） |
 | `HISTORY_MAX_ROWS` | `500000` | 历史行数上限（接近上限收缩；到达硬顶切 `ephemeral` 仅实时） |
 | `HISTORY_MAX_BACKFILL` | `0` | 历史回溯深度上限；`0` = 不限制（任何人可翻全量历史） |
@@ -79,6 +82,16 @@ bun run dev                   # http://localhost:3000
 | `PORT` | `3000` | 本地开发服务器端口（Vercel 忽略） |
 
 > 内部固定常量（不可配）：presence TTL 45s、轮询 1s、心跳 15s、events 出站表保留 1h。
+
+### 违禁词过滤
+
+内置精选词库在 `data/banned/basic/`（色情 291 / 辱骂 46 / 涉枪涉爆 434 / 诈骗广告 111，共 882 条），来源 [konsheng/Sensitive-lexicon](https://github.com/konsheng/Sensitive-lexicon)（MIT）＋本项目人工增补。**刻意不做整包导入**：源词库面向文本审核，含「兼职 / 招聘 / 客服 / 按摩 / 刺激」这类常用词，直接启用会大面积误伤；裁剪规则见 `data/banned/README.md`。
+
+- 匹配前先归一化（全角转半角、英文小写、剔除零宽字符与标点空白），「赌　博」「赌\*博」这类插空绕过无效；词长下限 2 字
+- 昵称与消息内容都受检；命中只回「内容含违禁词」，**不回显命中的词**
+- 误伤用 `BANNED_WORDS_ALLOW` 豁免（改环境变量即时生效），或直接删除词库文件中对应词条
+- 政治 / 暴恐 / 大表类词库默认不随仓库分发：需要时按 `data/banned/strict/README.md` 放入并设 `BANNED_WORDS_MODE=strict`
+- 部署提示：`vercel.json` 已把 `data/**` 打进函数（`includeFiles`）；目录缺失时服务只降级为「仅显式词」并在日志报错，不会影响发消息
 
 ### 存储形态（三种 `DATABASE_URL`）
 

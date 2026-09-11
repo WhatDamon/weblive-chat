@@ -167,11 +167,12 @@ async function send() {
       body: JSON.stringify({ client_id: cid, nick, text }),
     });
     const j = await res.json().catch(() => null);
-// 发送失败/网络异常时的提示区写入（notice 区纯文本）
+    // 发送失败/网络异常时的提示区写入（notice 区纯文本）
     if (!res.ok) {
       $("text").value = text; // 失败还原输入
       notice((j && j.error && j.error.message) || res.status + " 发送失败", true);
       if (res.status === 403) setStatus("本机已被禁言", "bad");
+      else if (res.status === 429) setStatus("发送过于频繁", "bad");
       return;
     }
     notice("");

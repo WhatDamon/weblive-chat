@@ -4,6 +4,7 @@ import {
   validUuid,
   validateMessageBody,
 } from "../../src/lib/validate";
+import { buildWordFilter } from "../../src/lib/wordfilter";
 
 const cfg = { nickMax: 24, textMax: 1000, bannedWords: ["赌博", "spam"] };
 
@@ -81,5 +82,26 @@ describe("validateMessageBody", () => {
     expect(sanitizeText("a\u0000b\u0007c")).toBe("abc");
     expect(validUuid("11111111-2222-4333-8444-555555555555")).toBe(true);
     expect(validUuid("11111111-2222-4333-8444-55555555555Z")).toBe(false);
+  });
+  test("注入词库 filter 时以词库为准（含白名单豁免），昵称同样受检", () => {
+    const filter = buildWordFilter(["违禁词"], ["违禁词豁免"]);
+    const cfgF = { nickMax: 24, textMax: 1000, bannedWords: [], filter };
+    const body = (nick: string, text: string) => ({
+      client_id: "11111111-2222-4333-8444-555555555555",
+      nick,
+      text,
+    });
+    expect(validateMessageBody(cfgF, body("甲", "违禁词豁免示例"))).toEqual({
+      ok: true,
+      nick: "甲",
+      text: "违禁词豁免示例",
+    });
+    const hit = validateMessageBody(cfgF, body("甲", "这是违禁词内容"));
+    expect(hit.ok).toBe(false);
+    if (!hit.ok) expect([hit.code, hit.field]).toEqual(["banned_word", "text"]);
+    const nickHit = validateMessageBody(cfgF, body("违禁词用户", "正常内容"));
+    expect(nickHit.ok).toBe(false);
+    if (!nickHit.ok)
+      expect([nickHit.code, nickHit.field]).toEqual(["banned_word", "nick"]);
   });
 });

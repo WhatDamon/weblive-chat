@@ -1,4 +1,7 @@
 import { describe, expect, test, afterEach } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { makeApp, readSse, UUID } from "../helpers";
 
 let cleanups: (() => Promise<void>)[] = [];
@@ -95,8 +98,36 @@ describe("chat 公开端点", () => {
     expect((await bad.json()).error.code).toBe("invalid_uuid");
   });
 
-  test("禁言：命中 bans 的 IP POST → 403 banned（含 reason）；未被禁 IP 正常", async () => {
-    const { app, repo } = await boot();
+  test("词库：basic 模式从磁盘加载精选词表，错误响应不回显命中词", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "wl-words-"));
+    mkdirSync(join(dir, "basic"));
+    writeFileSync(join(dir, "basic", "porn.txt"), "# 精选表（含注释行）\n测试违禁词A\n");
+    const { app } = await boot({
+      bannedWordsMode: "basic",
+      bannedWordsDir: dir,
+      bannedWords: [],
+    });
+    const send = (text: string) =>
+      app.request("/api/messages", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-forwarded-for": "3.3.3.3",
+        },
+        body: JSON.stringify({ client_id: UUID, nick: "甲", text }),
+      });
+    // 归一化绕过（全角/空格插空）同样命中
+    const res = await send("这里出现测试违禁词A了呢");
+    expect(res.status).toBe(400);
+    const raw = await res.text();
+    expect(JSON.parse(raw).error.code).toBe("banned_word");
+    expect(raw).not.toContain("测试违禁词A"); // 不回显命中词，避免被当成绕过字典
+    expect((await send("测试违禁词 A")).status).toBe(400);
+    expect((await send("正常内容")).status).toBe(201);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("禁言：命中 bans 的 IP POST → 403 banned（含 reason）；未被禁 IP 正常", async () => {    const { app, repo } = await boot();
     await repo.banUpsert("8.8.8.8", "spam", "admin", Date.now());
     const res = await app.request("/api/messages", {
       method: "POST",

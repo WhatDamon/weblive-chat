@@ -7,6 +7,7 @@ import { registerChat } from "./routes/chat";
 import { registerAdmin } from "./routes/admin";
 import { registerPages } from "./routes/pages";
 import { newHistoryState, performMaintenance } from "./lib/history";
+import { buildWordFilter, loadWordFilter, type WordFilter } from "./lib/wordfilter";
 
 export interface AppDeps {
   cfg: AppConfig;
@@ -35,6 +36,24 @@ export function createApp(deps: AppDeps): Hono {
     return booted;
   };
   const app = new Hono();
+
+  // 词库懒加载（memoized）：仅首次发言请求触发磁盘读取，不在冷启动/静态页路径上付费。
+  // 装载失败退化为「仅显式词」而非让请求失败——过滤降级不应拖垮发消息链路。
+  let filterPromise: Promise<WordFilter> | null = null;
+  const getFilter = (): Promise<WordFilter> => {
+    if (!filterPromise) {
+      filterPromise = loadWordFilter({
+        mode: cfg.bannedWordsMode,
+        dir: cfg.bannedWordsDir,
+        extra: cfg.bannedWords,
+        allow: cfg.bannedWordsAllow,
+      }).catch((err) => {
+        console.error("[wordfilter] 词库装载失败，已退化为仅显式词：", err);
+        return buildWordFilter(cfg.bannedWords, cfg.bannedWordsAllow);
+      });
+    }
+    return filterPromise;
+  };
 
   // 惰性 boot（冷启动幂等）+ 每请求快路径；bootstrap 异常统一 503 信封
   // （存储不可用不得泄漏为默认 500）
@@ -99,7 +118,7 @@ export function createApp(deps: AppDeps): Hono {
     return { mode: history.mode, retentionDays: history.retentionDays };
   };
 
-  registerChat(app, { cfg, repo, history, maintain });
+  registerChat(app, { cfg, repo, history, maintain, getFilter });
   // 管理 JSON API（HMAC Cookie 会话；Origin 闸口由 /api/* 中间件统一覆盖）
   registerAdmin(app, { cfg, repo, history, maintain });
   // 同源静态页（零构建 admin.html / demo.html）

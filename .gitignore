@@ -23,7 +23,14 @@ npm-debug.log*
 coverage/
 
 # Local dev database (SQLite)
-data/
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+
+# 违禁词库必须入库（部署时由 vercel.json includeFiles 打进函数）
+!data/banned/
+!data/banned/**
 
 # local worktrees
 .worktrees/

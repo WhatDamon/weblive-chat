@@ -1,3 +1,5 @@
+import type { BannedWordsMode } from "./wordfilter";
+
 export type Provider = "sqlite" | "postgres" | "memory";
 
 export interface RateCfg {
@@ -19,7 +21,11 @@ export interface AppConfig {
   // 限额
   nickMax: number;
   textMax: number;
+  // 违禁词：bannedWords 为显式追加词（BANNED_WORDS），词库文件按模式从 bannedWordsDir 加载
   bannedWords: string[];
+  bannedWordsMode: BannedWordsMode;
+  bannedWordsDir: string;
+  bannedWordsAllow: string[];
   // 保留/降级
   retentionDays: number;
   maxRows: number;
@@ -79,6 +85,14 @@ export function loadConfig(
     .split(",")
     .map((s) => s.trim().toLowerCase().replace(/\/+$/, ""))
     .filter(Boolean);
+  const bannedWordsMode = env.BANNED_WORDS_MODE ?? "basic";
+  if (
+    bannedWordsMode !== "off" &&
+    bannedWordsMode !== "basic" &&
+    bannedWordsMode !== "strict"
+  )    throw new Error(
+      `BANNED_WORDS_MODE 仅支持 off|basic|strict，收到 "${bannedWordsMode}"`,
+    );
   const rateWindowMs = 60_000;
   return {
     env: envName,
@@ -92,6 +106,12 @@ export function loadConfig(
     nickMax: envInt(env, "NICK_MAX", 24),
     textMax: envInt(env, "TEXT_MAX", 1000),
     bannedWords: (env.BANNED_WORDS ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+    bannedWordsMode,
+    bannedWordsDir: env.BANNED_WORDS_DIR ?? `${process.cwd()}/data/banned`,
+    bannedWordsAllow: (env.BANNED_WORDS_ALLOW ?? "")
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean),

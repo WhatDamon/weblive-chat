@@ -27,7 +27,7 @@
   `MessageView = {id: string, client_id: string, nick: string, text: string|null, deleted: boolean, created_at: ISO8601}`
   （软删消息：`deleted: true` 且 `text: null`，占位行保留）。
 - `POST /api/messages` 校验顺序：**格式/禁词（不耗限流预算、不触发 DB）→ 封禁（`403 banned`，含 `reason`）→ 限流（`429 rate_limited`）→ 写入**。
-  - 400 子码：`invalid_body`（非 JSON）、`invalid_uuid`、`nick_empty`、`nick_too_long`、`text_empty`、`text_too_long`、`banned_word`。
+  - 400 子码：`invalid_body`（非 JSON）、`invalid_uuid`、`nick_empty`、`nick_too_long`、`text_empty`、`text_too_long`、`banned_word`（昵称与内容都检查，`field` 指出命中字段）。
   - 201 响应 `id` 为字符串消息 id；`ephemeral` 模式仅广播不落历史，`id` 形如 `"e<eventId>"`（标识直播消息，不可回溯）。
   - 存储故障 → `503 db_unavailable`。
 - `GET /api/stream` 参数：
@@ -96,7 +96,7 @@
 | 400 | `invalid_uuid` | `client_id` 不是合法 UUID |
 | 400 | `invalid_cursor` | `GET /api/messages` 的 `limit` 与 `DELETE /api/admin/messages/:id` 的 `:id` 非纯数字（游标 id 必须是正整数）；**`before`/`since`/SSE `since` 的非法值不报错**——按缺省处理（历史取最近 50 条、流从 0 续传） |
 | 400 | `nick_empty` / `nick_too_long` / `text_empty` / `text_too_long` | 长度/空值校验 |
-| 400 | `banned_word` | 内容命中禁词（子串匹配） |
+| 400 | `banned_word` | 昵称或内容命中违禁词（归一化子串匹配：忽略全角/空白/标点/零宽字符；不回显命中词） |
 | 401 | `invalid_secret` / `unauthorized` | 口令错 / 会话缺失·过期·被篡改 |
 | 403 | `banned` | 该 IP 被禁言（附 `reason`） |
 | 403 | `origin_not_allowed` / `missing_origin` | Origin 不在名单 / `REQUIRE_ORIGIN` 下缺 Origin |

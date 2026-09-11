@@ -211,7 +211,7 @@ Cookie 安全：`HttpOnly; SameSite=Lax; Secure`（生产）；`ADMIN_SECRET` �
 
 - **限流**（每 IP 分桶，落库 `ON CONFLICT` upsert，60s 固定窗口、epoch ms 对齐）：消息 10 条/min；登录 5 次/min；开流 20 次/min。（数值即 `config.ts` 默认值，可用环境变量覆盖。）
 - **长度/格式**：nick ≤ 24 字符；text ≤ 1000 字符；均 trim + 去控制字符；`client_id` 须为合法 UUID。
-- **禁词**：`BANNED_WORDS`（逗号分隔，可选），命中 `400`。
+- **禁词**：内置精选词库（`data/banned/basic/`，来源 Sensitive-lexicon MIT + 人工增补）+ `BANNED_WORDS` 显式词 + `BANNED_WORDS_ALLOW` 白名单；`BANNED_WORDS_MODE=off|basic|strict`。匹配在归一化文本上进行（NFKC/小写/去零宽与标点），防「赌　博」类插空绕过；词长下限 2 字；昵称与内容都检，命中 `400 banned_word`。不做整包导入的原因（误伤）与裁剪规则见 `data/banned/README.md`。
 - **IP 来源**：`x-forwarded-for` 首跳（Vercel 注入），本地开发回退请求 IP；入库前规范化。
 - **CORS / 来源白名单**：见 §6.1。管理端点仅同源（Cookie 机制天然同源约束）。
 - **存储安全**：纯文本不存 HTML；XSS 为前端渲染责任（契约中明示）。
