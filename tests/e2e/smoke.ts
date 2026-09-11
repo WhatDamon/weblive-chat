@@ -1,7 +1,7 @@
-// T9/T10 本地端到端验收（真实打包入口：spawn `bun src/index.ts`，真实 file: sqlite 临时库）
-// 跨功能链：meta → SSE 开流(presence) → POST 消息(message 事件) → admin login →
-// 软删(delete 事件) → 封禁(禁言不禁看：被禁 IP 403、他 IP 消息仍广播到已开流) → stats → 历史视图 → 持久化复查
-// 运行：bun tests/e2e/e2e-acceptance.ts（仓库根由脚本位置相对推导，不依赖调用时 cwd）
+// 端到端冒烟：真实启动服务器（spawn `bun src/index.ts`，临时 file: SQLite 库）
+// 跨功能链：meta → SSE 开流(presence) → POST 消息(message 事件) → admin 登录 →
+// 软删(delete 事件) → 封禁(禁言不禁看：被禁 IP 403、其他 IP 消息仍广播到已开流) → stats → 历史视图 → 持久化复查
+// 运行：bun tests/e2e/smoke.ts（仓库根由脚本位置相对推导，不依赖调用时 cwd）
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,10 +11,10 @@ import { createRepo } from "../../src/lib/repo";
 
 // 仓库根 = 本文件上溯两级（tests/e2e/ → repo 根）；勿硬编码绝对路径
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
-const tmp = mkdtempSync(join(tmpdir(), "wl-e2e-"));
-const dbPath = join(tmp, "e2e.db");
+const tmp = mkdtempSync(join(tmpdir(), "wl-smoke-"));
+const dbPath = join(tmp, "smoke.db");
 let child: ChildProcess | null = null; // 模块级：异常路径也须杀子进程 + 清理临时库
-const ADMIN_SECRET = "e2e-" + Math.random().toString(36).slice(2);
+const ADMIN_SECRET = "smoke-" + crypto.randomUUID();
 const XFF_A = "9.9.9.8"; // 被禁 IP（先聊后封）
 const XFF_B = "9.9.9.9"; // 旁观看客（始终可聊）
 
@@ -83,7 +83,7 @@ async function main() {
     );
     proc.stdout!.on("data", (d) => {
       outBuf += d.toString();
-      const m = outBuf.match(/http:\/\/localhost:(\d+)\/demo\.html/);
+      const m = outBuf.match(/http:\/\/localhost:(\d+)/);
       if (m) {
         clearTimeout(timer);
         resolve(Number(m[1]));
@@ -91,7 +91,7 @@ async function main() {
     });
     proc.on("error", reject);
     proc.on("exit", (code, sig) => {
-      if (!outBuf.includes("/demo.html"))
+      if (!outBuf.includes("http://localhost:"))
         reject(
           new Error(`进程提前退出 code=${code} sig=${sig}；stdout:\n${outBuf}`),
         );
@@ -100,7 +100,7 @@ async function main() {
   const port = await ready;
   const base = `http://localhost:${port}`;
   console.log(
-    `[dev server up] ${base}（ADMIN_SECRET 前缀 e2e-、库 ${dbPath}）`,
+    `[server ready] ${base}（ADMIN_SECRET 前缀 smoke-、库 ${dbPath}）`,
   );
   const h = (xff = XFF_A) => ({
     "content-type": "application/json",

@@ -88,7 +88,7 @@ export function registerChat(app: Hono, d: ChatDeps) {
         mode: d.history.mode,
       });
     } catch {
-      // 存储不可用/冻结（§5.3/§7.2）统一 503 信封：历史读是最高频轮询路径，勿漏成 Hono 默认 500
+      // 存储不可用时统一 503 信封：历史读是最高频轮询路径，不得泄漏为默认 500
       return jsonError(c, 503, "db_unavailable");
     }
   });
@@ -102,7 +102,7 @@ export function registerChat(app: Hono, d: ChatDeps) {
     if (!v.ok) return jsonError(c, 400, v.code);
     try {
       const ban = await repo.banGet(ip);
-      if (ban) return jsonError(c, 403, "banned", { reason: ban.reason }); // D5 禁言：禁发不禁看
+      if (ban) return jsonError(c, 403, "banned", { reason: ban.reason }); // 禁言：禁发不禁看
       const rl = await rateCheck(repo, "msg", ip, cfg.rate.msgPerMin);
       if (!rl.allowed)
         return jsonError(c, 429, "rate_limited", {
@@ -115,7 +115,7 @@ export function registerChat(app: Hono, d: ChatDeps) {
         created_at: Date.now(),
       };
       if (d.history.mode === "ephemeral") {
-        // §7.2 仅实时：只写 events 广播（payload id 前缀 e 避开 messages.id）
+        // 仅实时模式：只写 events 广播（payload id 前缀 e，避开 messages.id 命名空间）
         const { eventId } = await repo.publishEphemeralMessage(msg);
         await d.maintain?.();
         return c.json(
@@ -136,9 +136,8 @@ export function registerChat(app: Hono, d: ChatDeps) {
 
   app.get("/api/stream", async (c) => {
     const ip = ipOf(c);
-    // 规格 §6 强制：开流 20 次/min（stream 桶按 IP，仿 POST msg 桶模式）——
-    // 控制者裁定：stream 桶此前悬空（全仓无调用点），开流前检查、超限 429。
-    // 禁言不禁看语义不变：stream 不做 banGet 拦截（禁言提示由 runStream 经 cfg.ip 发 ban 首帧）。
+    // 开流前按 IP 限流（stream 桶，默认 20 次/min）：超限 429。
+    // 禁言不禁看：此处不做封禁拦截（禁言提示由 runStream 经 cfg.ip 发送 ban 首帧）。
     try {
       const rl = await rateCheck(repo, "stream", ip, cfg.rate.streamPerMin);
       if (!rl.allowed)
@@ -159,7 +158,7 @@ export function registerChat(app: Hono, d: ChatDeps) {
     // 动态 import：仅流请求路径加载 hono/streaming（其余请求零开销）
     const { streamSSE } = await import("hono/streaming");
     return streamSSE(c, async (stream) => {
-      // ip 在 StreamCfg（账本 seam）：runStream 经 cfg.ip → repo.banGet 做禁言提示
+      // ip 经 StreamCfg 传入：runStream 据此查封禁并推 ban 首帧（禁言不禁看）
       const ctrl = runStream({
         repo,
         cfg: {
@@ -180,9 +179,9 @@ export function registerChat(app: Hono, d: ChatDeps) {
           stream.write(": ping\n\n");
         },
       });
-      // 简报硬伤 + Ruling：hono 4.13.7 的 SSEStreamingApi.aborted 是布尔不是
-      // Promise，直接 await 会秒回并触发 run() finally close 关流；改为挂 onAbort
-      // 回调 stop 控制器并 resolve，回调挂起到客户端断开才返回。
+      // hono 的 SSEStreamingApi.aborted 是布尔值而非 Promise：直接 await 会立即返回
+      // 并触发关流。改为挂 onAbort 回调——客户端断开时停止控制器并 resolve，
+      // 使本 Promise 一直挂起，连接因此保持到对端断开。
       await new Promise<void>((resolve) => {
         stream.onAbort(() => {
           ctrl.stop();

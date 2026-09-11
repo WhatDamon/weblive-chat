@@ -36,8 +36,8 @@ export function createApp(deps: AppDeps): Hono {
   };
   const app = new Hono();
 
-  // 惰性 boot（Vercel 冷启动幂等）+ 每请求快路径；bootstrap 异常统一 503 信封
-  // （§5.3/§7.2：存储不可用不得泄漏成默认 500）
+  // 惰性 boot（冷启动幂等）+ 每请求快路径；bootstrap 异常统一 503 信封
+  // （存储不可用不得泄漏为默认 500）
   app.use("*", async (c, next) => {
     try {
       await boot();
@@ -47,7 +47,7 @@ export function createApp(deps: AppDeps): Hono {
     await next();
   });
 
-  // /api 中间件：Origin 闸口（§6.1）+ CORS 响应头
+  // /api 中间件：Origin 闸口 + CORS 响应头
   app.use("/api/*", async (c, next) => {
     const origin = c.req.header("origin");
     const cls = classifyOrigin(origin, cfg.allowedOrigins, cfg.requireOrigin);
@@ -68,7 +68,7 @@ export function createApp(deps: AppDeps): Hono {
     await next();
   });
 
-  // §7.2 维护：每 maintenanceEvery 次写触发一次清理与档位评估；档位变化广播 notice
+  // 维护：每 maintenanceEvery 次写触发一次过期清理与档位评估；档位变化广播 notice
   // （chat 与 admin 共用同一维护闭包与 history 状态，保持档位/计数单一来源）
   const maintain = async (now = Date.now()) => {
     history.writeCount += 1;
@@ -100,17 +100,17 @@ export function createApp(deps: AppDeps): Hono {
   };
 
   registerChat(app, { cfg, repo, history, maintain });
-  // T7：管理 JSON API（HMAC Cookie 会话；Origin 闸口已由 /api/* 中间件覆盖）
+  // 管理 JSON API（HMAC Cookie 会话；Origin 闸口由 /api/* 中间件统一覆盖）
   registerAdmin(app, { cfg, repo, history, maintain });
-  // T8：同源静态页（零构建 admin.html/demo.html 参考客户端，D15）
+  // 同源静态页（零构建 admin.html / demo.html）
   registerPages(app);
   return app;
 }
 
 /**
- * 生产组装（读真实 env：Bun 自动加载 .env 到 process.env；Vercel 注入 process.env）。
- * index.ts 双入口共用；buildApp() 由 loadConfig 读取 process.env——注意 loadConfig 只读
- * 传入的 env（不隐式读 process.env），此处必须显式传，否则 dev/server 将忽略全部环境变量。
+ * 生产组装（读真实环境变量：本地由 Bun 自动加载 .env，Vercel 由平台注入）。
+ * 两个入口共用：loadConfig 只读传入的 env（不隐式读 process.env），
+ * 因此此处必须显式传入，否则服务将忽略全部环境变量。
  */
 export async function buildApp(
   env: Record<string, string | undefined> = process.env as Record<

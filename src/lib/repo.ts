@@ -41,7 +41,7 @@ export interface Repo {
   sendMessageAndEvent(
     m: MessageInput,
   ): Promise<{ messageId: number; eventId: number }>;
-  /** 仅实时（ephemeral 模式，§7.2）广播：只写 events、不写 messages；payload id 形如 "e<eventId>"（避开 messages.id 命名空间，避免 delete 误伤）。
+  /** 仅实时（ephemeral 模式）广播：只写 events、不写 messages；payload id 形如 "e<eventId>"（避开 messages.id 命名空间，避免 delete 误伤）。
    * 内部先插空 payload 取 eventId，再在**同一事务**内 UPDATE 为完整 JSON。 */
   publishEphemeralMessage(m: MessageInput): Promise<{ eventId: number }>;
   insertEvent(
@@ -96,7 +96,7 @@ const mapEvent = (r: any): EventRow => ({
   created_at: Number(r.created_at),
 });
 
-// SQL 模板（仅含 ? 占位；SELECT 后追 RETURNING/双写事务语句按方言微调，见 impl）
+// SQL 模板（仅含 ? 占位；按方言追加 RETURNING 或用事务包裹，见各自的执行分支）
 const SQL = {
   insMessage:
     "INSERT INTO messages (client_id, nick, text, created_at) VALUES (?, ?, ?, ?)",

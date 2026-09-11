@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>weblive-chat 管理</title>
+<title>WebLive Chat · 管理后台</title>
 <style>
   :root { color-scheme: light dark; }
   body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif; margin: 0; background: #f4f5f7; color: #1c1e21; }
@@ -31,14 +31,14 @@
 <body>
 <div class="wrap">
   <header>
-    <h1>weblive-chat 管理</h1>
+    <h1>WebLive Chat 管理后台</h1>
     <span class="muted" id="myip"></span>
-    <a href="/demo.html">← 返回 Demo</a>
+    <a href="/demo.html">← 返回聊天室</a>
   </header>
 
   <div id="login" class="card">
     <h2>管理员登录</h2>
-    <p class="muted">口令即部署时配置的环境变量 <code>ADMIN_SECRET</code>（未设置时生产环境拒绝启动；本地开发为 dev-insecure-secret）。登录后会话经 HttpOnly Cookie 保存，页面不落盘口令。</p>
+    <p class="muted">请输入部署时配置的管理员口令。登录后会话以 HttpOnly Cookie 保存，页面不存储口令。</p>
     <div class="row">
       <input type="password" id="secret" placeholder="ADMIN_SECRET 口令" autocomplete="current-password">
       <button class="primary" id="loginBtn">登录</button>
@@ -187,9 +187,9 @@ $("banBtn").onclick = async () => {
 };
 $("selfBanBtn").onclick = async () => {
   const ip = $("selfIp").textContent;
-  if (!ip || ip.indexOf("…") >= 0) { alert("尚未取得本机 IP（本页需经服务端代理访问）"); return; }
+  if (!ip || ip.indexOf("…") >= 0) { alert("尚未取得本机 IP（请通过部署域名访问本页）"); return; }
   try {
-    await api("/api/admin/bans", { method: "POST", body: JSON.stringify({ ip, reason: "管理页自测封禁" }) });
+    await api("/api/admin/bans", { method: "POST", body: JSON.stringify({ ip, reason: "管理页操作" }) });
     refreshBans();
   } catch (e) { alertErr(e); }
 };

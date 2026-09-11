@@ -1,7 +1,7 @@
 {
   "name": "weblive-chat",
-  "version": "0.1.0",
-  "description": "免登录、可部署到 Vercel 的实时聊天后端（实时广播在线人数、可选聊天记录持久化、管理员 IP 封禁）",
+  "version": "1.0.0",
+  "description": "WebLive Chat —— 免登录、可直接部署到 Vercel 的实时聊天后端：SSE 实时广播与在线人数、可插拔存储（SQLite/Turso/PostgreSQL）、管理后台与 IP 封禁",
   "type": "module",
   "license": "MIT",
   "author": "Damon Lu",

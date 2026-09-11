@@ -55,7 +55,7 @@ describe("admin API", () => {
     });
     const cookie = (login.headers.get("set-cookie") ?? "").split(";")[0];
     const auth = (extra: Record<string, string> = {}) => ({ cookie, ...extra });
-    // 简报硬伤修正（机械）：请求体必须置于 init 顶层，content-type 归入 headers
+    // 请求体置于 init 顶层，content-type 归入 headers
     const postBan = (ip: string, reason: string) =>
       app.request("/api/admin/bans", {
         method: "POST",

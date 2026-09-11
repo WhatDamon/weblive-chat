@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
 /**
- * Vercel 入口形态回归护栏（线上事故 2026-09-11）。
+ * Vercel 入口形态回归护栏：锁定入口导出形态，避免整站请求挂起。
  *
  * Vercel Node 运行时的 Web handler 只接受：
  *   1. `export default { fetch(request) }`
@@ -23,7 +23,12 @@ const CLIENT = "11111111-2222-4333-8444-555555555555";
 
 /** 环境隔离：只在本文件的测试窗口内设置 env（bun 按文件顺序执行，afterAll 先于下个文件），
  *  且在 beforeAll 里完成首次调用把 app 实例缓存住，afterAll 立刻归还 env。 */
-const KEYS = ["DB_PROVIDER", "DATABASE_URL", "NODE_ENV", "ADMIN_SECRET"] as const;
+const KEYS = [
+  "DB_PROVIDER",
+  "DATABASE_URL",
+  "NODE_ENV",
+  "ADMIN_SECRET",
+] as const;
 let saved: Record<string, string | undefined> = {};
 
 beforeAll(async () => {
@@ -50,7 +55,7 @@ describe("Vercel 入口导出形态", () => {
     const d = mod.default as { fetch?: unknown };
     expect(typeof mod.default).toBe("object");
     expect(typeof d.fetch).toBe("function");
-    // 裸函数形态（旧事故）会命中这里
+    // 裸函数形态会命中这里（会被当作旧式 (req, res) 处理器调用）
     expect(typeof mod.default).not.toBe("function");
   });
 
@@ -81,14 +86,22 @@ describe("Vercel 入口导出形态", () => {
       new Request("http://localhost/api/messages", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ client_id: CLIENT, nick: "入口", text: "形态烟测" }),
+        body: JSON.stringify({
+          client_id: CLIENT,
+          nick: "入口",
+          text: "形态烟测",
+        }),
       }),
     );
     expect(post.status).toBe(201);
 
-    const list = await fetch(new Request("http://localhost/api/messages?limit=5"));
+    const list = await fetch(
+      new Request("http://localhost/api/messages?limit=5"),
+    );
     expect(list.status).toBe(200);
-    const j = (await list.json()) as { messages: Array<{ text: string | null }> };
+    const j = (await list.json()) as {
+      messages: Array<{ text: string | null }>;
+    };
     expect(j.messages.some((m) => m.text === "形态烟测")).toBe(true);
 
     const root = await fetch(new Request("http://localhost/"));

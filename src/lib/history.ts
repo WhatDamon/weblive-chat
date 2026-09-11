@@ -1,10 +1,8 @@
 export type HistoryMode = "full" | "degraded_retention" | "ephemeral";
 export const RETENTION_LADDER_DAYS = [90, 30, 10, 3, 1];
 const DAY_MS = 86_400_000;
-// 行数占比阈值 → 收缩后保留天数（规格 §7.2：接近上限逐级 90→30→10→3→1）。
+// 行数占比阈值 → 收缩后保留天数：接近上限时逐级 90→30→10→3→1（`HISTORY_RETENTION_DAYS` 为基线上限）。
 // 阈值按占比升序；命中即覆盖为更短档，循环结束后保留的是最高命中阈值对应天数（最严档）。
-// 注：任务简报正文中的 STEPS 文字与其测试期望自相矛盾（0.5 档写成 90 天会令
-// retained=600/1000 的用例期望 30 天落空）——此处按测试/规格语义实现。
 const STEPS: [number, number][] = [
   [0.5, 30],
   [0.7, 10],
@@ -65,7 +63,7 @@ export interface HistoryDeps {
 }
 
 // PG 的 messages.id 为 serial（int4）：不能把 Number.MAX_SAFE_INTEGER 直接作为 `id < ?` 的实参——
-// postgres.js 以文本发送数字、PG 按 int4 列类型解析 → 执行期 out of range（与 tests/integration/repo.test.ts 同因同值）。
+// postgres.js 以文本发送数字、PG 按 int4 列类型解析 → 执行期 out of range。
 // sqlite INTEGER 存 2_147_483_647 亦无碍（保留期裁剪封顶 ~maxRows 行，id 现实远低于此）。
 export const MAX_ID_BOUND = 2_147_483_647;
 

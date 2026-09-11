@@ -27,7 +27,7 @@ export function cookieHeader(
   token: string,
   maxAgeSec: number,
 ): string {
-  // Cookie 安全（规格 §5）：Secure 仅生产（测试/本地 http 不设，避免被忽略）；
+  // Cookie 安全：Secure 仅生产（本地 http 不设，避免被浏览器忽略）；
   // SameSite=Lax + HttpOnly 恒定。
   const secure = cfg.env === "production" ? "; Secure" : "";
   return `${cfg.cookieName}=${token}; Max-Age=${maxAgeSec}; ${COOKIE_FLAGS}${secure}`;
@@ -139,7 +139,7 @@ export function registerAdmin(app: Hono, d: AdminDeps) {
       typeof body.reason === "string" ? body.reason.trim().slice(0, 200) : "";
     if (!ip) return jsonError(c, 400, "invalid_body", { message: "ip 不合法" });
     try {
-      // 幂等 upsert（Ruling B）：重复封禁 → 覆盖 reason 并回报 created:false（非 409）
+      // 幂等 upsert：重复封禁覆盖 reason 并返回 created:false（而非 409）
       const created = await repo.banUpsert(
         ip,
         reason || "（未填写原因）",

@@ -23,7 +23,7 @@ export interface StreamOpts {
   /** 起始游标：缺省 0（从头开始增量）。 */
   since?: number;
   emit: (type: string, data: unknown) => void;
-  /** 心跳注释行写入口：缺省 no-op（测试/无需保活场景可不传）。 */
+  /** 心跳注释行写入口：缺省 no-op（无需保活时可省略）。 */
   emitComment?: (text: string) => void;
 }
 
@@ -42,7 +42,7 @@ export function runStream(o: StreamOpts): { stop: () => void } {
   const tickPoll = async () => {
     let rows = await o.repo.eventsSince(since, 100);
     if (rows.length === 0 && since > 0) {
-      // 游标回退（规格 §5「流与游标语义」）：events 已清理 → 重置到当前 max
+      // 游标回退：events 已被清理（旧游标落后于保留期）→ 重置到当前 max 后继续
       const maxId = await o.repo.eventsMaxId();
       if (since > maxId) since = Math.max(maxId, 0);
       rows = await o.repo.eventsSince(since, 100);
@@ -85,7 +85,7 @@ export function runStream(o: StreamOpts): { stop: () => void } {
     if (o.cfg.ip) {
       const ban = await o.repo.banGet(o.cfg.ip);
       if (ban) {
-        o.emit("ban", { reason: ban.reason }); // D5：禁言提示，流保持
+        o.emit("ban", { reason: ban.reason }); // 禁言提示，流保持打开
         lastSent = Date.now();
       }
     }

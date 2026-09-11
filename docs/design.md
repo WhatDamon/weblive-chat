@@ -1,8 +1,8 @@
 # weblive-chat 后端设计规格
 
 - 日期：2026-09-09
-- 状态：已批准（approved，2026-09-09）
-- 范围：后端服务 + API 契约 v0.1 + 内置**零构建验证 Demo**（`public/demo.html`，同仓同 Vercel 项目、同源部署，兼作契约参考客户端）；完整前端应用不在本期，前端将依据本文档的契约接入
+- 状态：已定稿
+- 范围：后端服务 + API 契约 v1 + 内置**零构建聊天页**（`public/demo.html`，同仓同 Vercel 项目、同源部署）；完整前端应用不在本期，前端依据本文档的契约接入
 
 ## 1. 产品目标与约束
 
@@ -14,7 +14,7 @@
 2. **Bun 管理**：本地开发 / 测试 / 脚本用 Bun；对外部署到 Vercel（Node Runtime 运行同一份代码，由 Hono 适配层保证双运行时兼容）。
 3. 目标运行环境为 **Vercel Serverless：无状态**（每请求/每连接独立进程、随时回收、断线重连不保证同一实例）。
 
-### 1.1 MVP 功能范围（本期）
+### 1.1 功能范围
 
 - 匿名昵称聊天：实时收发、新进入自动加载最近历史
 - 在线人数实时广播
@@ -22,7 +22,7 @@
 - 基础防滥用：限流、昵称/消息长度上限、可配置禁词
 - 历史滚动保留（可配置）
 - 存储超限时**自动收缩保留期 / 降级为仅实时模式**（§7.2）
-- 内置**验证 Demo**：`/demo.html`（零构建原生、同源）——昵称收发、历史加载、在线人数、断线自动重连；显示自身 IP + 一键自封（验证禁言/限流即时生效）
+- 内置**聊天页**：`/demo.html`（零构建原生、同源）——昵称收发、历史加载、在线人数、断线自动重连；封禁与删除由管理后台 `/admin` 负责
 
 ### 1.2 非目标（明确不做，防范围蔓延）
 
@@ -35,7 +35,7 @@
 | D1 | 持久化由 **`DB_PROVIDER`（sqlite \| postgres）显式选择**，配 `DATABASE_URL`：SQLite 系 = 本地 `file:`（开发/测试）或远程 Turso（生产）；Postgres 系 = 任意实例（Neon / Supabase / 自托管）。默认 `sqlite` + Turso | 目标"手动自选 SQLite/PostgreSQL"= 配置切换而非代码分叉；见 §4.1 矩阵与 §7.3；Turso 免费档无 CU 时间计费，Neon 有（§7.1） |
 | D2 | **免登录**：客户端自持 `client_id`（UUID，无账号）；**管理员**：`ADMIN_SECRET` 口令换 HttpOnly 签名 Cookie（无状态，不落库） | 普通用户零摩擦；"保证有管理员"由**部署者配置**保证，仓库零敏感数据 |
 | D3 | 实时通道 **SSE + POST**（事件流 `since` 游标自动续传；上行普通 POST） | Vercel 免费计划上 WS/SSE 都受函数时长上限约束，SSE 契约最干净、平台耦合最低；未来可把总线替换为 Redis/Ably 而**不改客户端契约** |
-| D4 | 跨实例广播用 **Turso 作为总线**：`events` 出站表（outbox），每个事件流每秒轮询增量 | Serverless 无共享内存；轮询在 Turso 只计"行读取"、无 CU 时间炸弹；MVP 以 ~1 qps/流 的读放大换取零额外基础设施；负载路径见 §7 |
+| D4 | 跨实例广播用 **Turso 作为总线**：`events` 出站表（outbox），每个事件流每秒轮询增量 | Serverless 无共享内存；轮询在 Turso 只计"行读取"、无 CU 时间炸弹；以 ~1 qps/流 的读放大换取零额外基础设施；负载路径见 §7 |
 | D5 | 封禁 = **禁言不禁看**：持久化 `bans` 表，发消息时**实时查库校验**（跨实例一致、即时生效）；已开流不断、仍可旁观，命中 IP 的流收到提示事件 | 误伤（同 IP 无辜用户/NAT）影响最小化；强制层 = 禁发 + 限流 |
 | D6 | 管理员删消息 = **软删占位**（`deleted_at` 置位、清空内容、保留 id/时间） | 避免他人回复上下文悬空；保留审计 |
 | D7 | 历史**滚动保留**：天数（`HISTORY_RETENTION_DAYS`，默认 90）**与行数上限双控**（`HISTORY_MAX_ROWS`，默认 50 万），**自动逐级收缩**；出站表短期清理（1 小时） | 免费存储有上限，超限=写入失败；双控+自收缩避免静默事故，无需外部定时器 |
@@ -46,8 +46,8 @@
 | D12 | 可选**来源白名单**：`ALLOWED_ORIGINS` 未设置 = 开放（CORS `*`）；设置后 fail-closed（不在名单的跨源请求 `403 origin_not_allowed`）；无 Origin 直连默认放行，`REQUIRE_ORIGIN=1` 可收紧（§6.1） | 防第三方站点套壳/跨站借力；明确其**非认证**，强制手段仍靠封禁 + 限流 |
 | D13 | 建表 = **启动幂等自建**：`DB_MIGRATE_ON_BOOT`（默认开）首次请求前 `CREATE TABLE IF NOT EXISTS`；schema 演进期后再引入版本化 SQL 迁移 | "直接部署到 Vercel" 零手动步骤；当前 schema 小，自建表足够 |
 | D14 | 历史回溯默认**全量开放**（可翻页）；`HISTORY_MAX_BACKFILL` 可限回溯深度/关闭（0=不限制）。免登录下历史 = 公开存档，README 明示合规风险 | 开箱即用（新访客补上下文）；部署者按需收紧 |
-| D15 | 内置**零构建验证 Demo**（同源 `public/demo.html`，随本 Vercel 项目部署，兼作 API 契约参考客户端）；`/api/meta` 暴露 `client_ip` 供一键自封自测 | 同源免 CORS、部署后即可线上自测 SSE+DB；参考客户端示范 since 重连/补齐；meta 加 `client_ip` 是本期唯一契约扩展 |
-| D16 | 存储层 = **手写可移植 SQL 仓库**（本期不引 ORM）：跨方言 SQL 子集 + 按 provider 维护的幂等 DDL（`lib/ddl.ts`/`lib/repo.ts`）；数据模型增加第 5 表 `rate_limits` 支撑原子限流计数 | 依赖最少，file:sqlite / Postgres 同一套集成用例双跑最稳；Serverless 无共享内存，限流计数必须落库原子自增（§4） |
+| D15 | 内置**零构建聊天页**（同源 `public/demo.html`，随本 Vercel 项目部署）；`/api/meta` 暴露 `client_ip` 供前端展示本机 IP | 同源免 CORS、部署后即可线上验证 SSE+DB；前端示范 since 重连与缺口补齐；`client_ip` 是本期唯一契约扩展 |
+| D16 | 存储层 = **手写可移植 SQL 仓库**（不引入 ORM）：跨方言 SQL 子集 + 按 provider 维护的幂等 DDL（`lib/ddl.ts`/`lib/repo.ts`）；数据模型增加第 5 表 `rate_limits` 支撑原子限流计数 | 依赖最少，file:sqlite / Postgres 同一套集成测试双跑最稳；Serverless 无共享内存，限流计数必须落库原子自增（§4） |
 
 ## 3. 架构与数据流
 
@@ -115,7 +115,7 @@ CREATE INDEX ON presence (last_seen);
 -- 封禁（持久化，唯一 IP）
 bans (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  ip         TEXT NOT NULL UNIQUE,          -- MVP 精确匹配（规范化存储）；CIDR/前缀后置
+  ip         TEXT NOT NULL UNIQUE,          -- 精确匹配（规范化存储）；CIDR/前缀后置
   reason     TEXT NOT NULL,
   banned_by  TEXT NOT NULL,
   created_at INTEGER NOT NULL               -- epoch ms
@@ -165,7 +165,7 @@ rate_limits (
 
 | 端点 | 说明 |
 |---|---|
-| `GET /api/meta` | 轻量配置：`{limits:{nick_max,text_max,retention_days}, presence:{ttl_s}, client_ip}`（无 DB 依赖；`client_ip` = 服务端视角当前请求 IP、已规范化，供 demo/前端自测展示） |
+| `GET /api/meta` | 轻量配置：`{limits:{nick_max,text_max,retention_days}, presence:{ttl_s}, client_ip}`（无 DB 依赖；`client_ip` = 服务端视角当前请求 IP、已规范化，供前端展示） |
 | `GET /api/messages?before=<id>&limit=50` | 历史回溯，newest-first，默认最近 50（≤200）；回溯深度默认全量，`HISTORY_MAX_BACKFILL` 可限深/关闭；软删消息返回占位；`ephemeral` 模式返回 `{messages: [], mode: "ephemeral"}` |
 | `GET /api/messages?since=<id>&limit=200` | 增量补齐（gap-sync，oldest-first；与事件流事件去重由客户端按 id 处理） |
 | `POST /api/messages` | body `{client_id, nick, text}` → `201 {id, created_at}`；`403 banned`（含 reason）／`429`／`400` |
@@ -197,7 +197,7 @@ SSE 事件类型：
 | `DELETE /api/admin/messages/:id` | 软删（占位行保留、text 清空、`deleted_by='admin'` 固定标识、不存操作者 IP）→ 写 `delete` 出站事件（payload 仅 `{id}`） |
 | `GET /api/admin/stats` | `{online, messages_total, messages_retained, history: {mode, retention_days, estimate_bytes}}` —— 暴露存储用量与当前持久化模式，超限前给预警；读取时顺带触发维护刷新档位（借维护节拍，写/读共用同一计数器） |
 
-注：管理端不再提供 `GET /api/admin/messages`（消息查看由公开 `GET /api/messages` 承担，软删标记同样透出）；本表于 T7 落库后按实现契约修订（Ruling B，替换早于 ADMIN_SECRET 决策的陈旧行：`{password}`/12h、`/session → {admin}`、重复封禁 409）。
+注：管理端不再提供 `GET /api/admin/messages`（消息查看由公开 `GET /api/messages` 承担，软删标记同样透出）。
 
 Cookie 安全：`HttpOnly; SameSite=Lax; Secure`（生产）；`ADMIN_SECRET` 在 `NODE_ENV=production` 且未设置时于启动阶段抛错拒绝（仅校验缺失、无长度下限，属启动错误而非 HTTP 响应码）。
 
@@ -207,9 +207,9 @@ Cookie 安全：`HttpOnly; SameSite=Lax; Secure`（生产）；`ADMIN_SECRET` �
 
 > 配置缺失不产生响应码：`DATABASE_URL`（postgres 形态）/`ADMIN_SECRET`（生产）等在启动/构建阶段由 `loadConfig` 直接抛错，无 `503 not_configured`。
 
-## 6. 防滥用与安全（MVP 基线）
+## 6. 防滥用与安全
 
-- **限流**（每 IP 分桶，落库 `ON CONFLICT` upsert，60s 固定窗口、epoch ms 对齐）：消息 10 条/min；登录 5 次/min；开流 20 次/min。（数值以计划/T1 config 默认值为准，本节早期草稿的「10 条/10s 且 300 条/h / 登录 5 次/5min / text ≤ 2000」为陈旧值，已废弃。）
+- **限流**（每 IP 分桶，落库 `ON CONFLICT` upsert，60s 固定窗口、epoch ms 对齐）：消息 10 条/min；登录 5 次/min；开流 20 次/min。（数值即 `config.ts` 默认值，可用环境变量覆盖。）
 - **长度/格式**：nick ≤ 24 字符；text ≤ 1000 字符；均 trim + 去控制字符；`client_id` 须为合法 UUID。
 - **禁词**：`BANNED_WORDS`（逗号分隔，可选），命中 `400`。
 - **IP 来源**：`x-forwarded-for` 首跳（Vercel 注入），本地开发回退请求 IP；入库前规范化。
@@ -235,7 +235,7 @@ Cookie 安全：`HttpOnly; SameSite=Lax; Secure`（生产）；`ADMIN_SECRET` �
 1. 精确匹配 `scheme://host[:port]`：忽略路径/query、去尾斜杠、小写主机；不做子串匹配；`https://*.a.com` 通配暂不支持（多域名直接列举）。
 2. 名单含多个域名时，禁止 `Access-Control-Allow-Origin: *` 与 `Access-Control-Allow-Credentials` 同用；所有响应带 `Vary: Origin`，防 CDN 缓存错发。
 3. 仅信 **Origin**，不信 `Referer`（可伪造、隐私策略下常缺失）。
-4. 管理端点 MVP 仅同源（Cookie 天然约束）；需自建跨源管理前端时，把该域名显式加入名单并启用 credentials 模式。
+4. 管理端点默认仅同源（Cookie 天然约束）；需自建跨源管理前端时，把该域名显式加入名单并启用 credentials 模式。
 5. `GET /api/stream`（SSE，EventSource 跨源带 Origin）与 POST 走同一中间件闸口；本地开发将 `http://localhost:<port>` 加入名单。
 6. 预检：OPTIONS 仅对名单内 Origin 放行并回 `Access-Control-Max-Age` 缓存预检结果。
 7. 非目标：路径/参数级访问控制（应用鉴权职责，不属于来源限制）。
@@ -260,7 +260,7 @@ Cookie 安全：`HttpOnly; SameSite=Lax; Secure`（生产）；`ADMIN_SECRET` �
 - Neon（若选用）：持续在线即烧 CU——请仅在低流量演示或启用付费档时使用；其存储超限语义与 Turso 相同（写失败）。
 - **Provider 形态**（§4.1）：本地开发/测试用 `file:` SQLite 零成本；Vercel 生产用远程 Turso 或 Postgres（`file:` 型在 Vercel 上不持久，禁止作生产存储）。
 
-### 7.2 自动收缩 / 降级（进 MVP）
+### 7.2 自动收缩 / 降级
 
 设计原则：**历史持久化与实时广播解耦** —— 发消息**必写** `events`（1h 自清理，实时流的唯一依赖）；**可选写** `messages`（历史）。持久化模式由"行数 × 天数"对配置上限**确定性推导**（所有实例读同一批数据得同一结论，无需共享状态）：
 
@@ -285,7 +285,7 @@ Cookie 安全：`HttpOnly; SameSite=Lax; Secure`（生产）；`ADMIN_SECRET` �
 
 任一阶段切 provider = 改 `DATABASE_URL` 一个值（schema 为通用子集），无代码结构变更。
 
-- **封禁粒度**：MVP 精确 IP；后续加 CIDR/前缀匹配只涉及校验函数与索引，不改契约。
+- **封禁粒度**：精确 IP；后续加 CIDR/前缀匹配只涉及校验函数与索引，不改契约。
 
 ## 8. 测试策略
 
@@ -309,37 +309,37 @@ src/
   lib/limits.ts       # 限流判定（配 repo.rateHit 原子计数）
   lib/history.ts      # 保留策略 + 自动收缩/降级（§7.2）
   lib/stream.ts       # 事件流控制器（轮询/游标回退/presence 广播，可单测）
-public/demo.html      # 验证 Demo（零构建、同源，兼作 API 契约参考客户端）
+public/demo.html      # 聊天页（零构建、同源）
 public/admin.html     # 管理页（零构建）
-scripts/              # 演进期启用：版本化 SQL 迁移（本期不引 ORM，见 D16）
+scripts/              # 演进期启用：版本化 SQL 迁移（不引入 ORM，见 D16）
 .env.example（含 DB_PROVIDER、三种 URL、ALLOWED_ORIGINS、DB_MIGRATE_ON_BOOT、HISTORY_MAX_BACKFILL 示例）  vercel.json  docs/api.md(实现期由本规格提取)
 tests/                # bun test（单元为主）
 ```
 
-## 10. 待实现期确认的技术细节（非契约）
+## 10. 上线前需实测的运行时细节（非契约）
 
 - SSE 在 Vercel 实测：官方文档 Hobby 默认/最大时长均 300s（fluid compute），验证空闲不提前断流、断点重连与 presence TTL 衔接。
 - 单函数部署形态实测：`src/index.ts` 默认导出 **Web handler 对象 `{ fetch(request) }`**（Vercel Node 运行时唯一接受的三种形态之一：`{ fetch }` / 具名 `GET|POST…` / 自带 `.fetch` 的框架实例）承接全部路由，`vercel.json` 用 `builds` + `@vercel/node`；本地 Bun.serve 同进程跑同一 app。
-  - ⚠️ **线上事故教训（2026-09-11）**：曾导出**裸函数** `export default async (req: Request) => Response`——Vercel 将其当作旧式 `(req, res)` 处理器调用，函数从不写 `res` → 响应永不下发，表现为**整站 0 字节挂起直至函数超时**（连静态页也挂，因 catch-all 把全部路由都指向该函数）。修复：改回 `{ fetch }` 形态；护栏 `tests/integration/vercel-entry.test.ts` 锁死该形态并按运行时约定直接调 `default.fetch(Request)`。
+  - ⚠️ **入口导出形态**：必须是带 `fetch` 方法的对象（Vercel Node 运行时的 Web handler 约定）；裸函数导出会被当作旧式 `(req, res)` 处理器，响应永不下发（整站挂起至函数超时）。护栏见 `tests/integration/vercel-entry.test.ts`。
   - 模块顶层**不得出现 top-level await**（`@vercel/node` 产物可能转 CJS）；dev 入口改用 `void buildApp().then(...)`。
 - 驱动实测：`@libsql/client`（file: 与 libsql://）与 `postgres.js` 在 Bun/Node 双运行时行为；本地 `file:` 与远端 Turso 的一致性。
 - 发消息 events + messages 双写须在同一事务内（SQLite batch / PG begin），失败整体回滚。
 - "平均行字节"估算与保留行数统计的实现成本（`COUNT` 每 ~100 次写入评估一次），避免每次写入全表扫描。
-- 静态页随函数部署：`/demo.html`、`/admin` 由 Hono 同进程读取 `public/` 提供（同源）；Vercel 上将 `public/**` 打进函数文件系统（实现期验证）。
+- 静态页随函数部署：`/demo.html`、`/admin` 由 Hono 同进程读取 `public/` 提供（同源）；Vercel 上将 `public/**` 打进函数文件系统（部署时验证）。
 
-## 11. 实现后记录（2026-09-09，T1–T10 落地，状态 approved）
+## 11. 实现说明（相对早期草稿的收敛点）
 
-本文档已由草案转为已批准实现契约；`docs/api.md` 按实现逐项校正。与早期草稿文字不一致处均属**实现收敛**（Ruling 记录于计划执行账本）：
+以下为落地后与早期草稿不一致或进一步明确之处：
 
 - **events payload 构造于 repo 事务内**：`sendMessageAndEvent` 先插 `messages` 拿自增 id，再构造 `{id: String(messageId), client_id, nick, text, created_at}` 载荷并在同一事务内插 `events`（双写原子）。
 - **SSE 支持可选 `client_id=<uuid>`**（presence 归因/多标签去重），缺失回落每连接 `anon-<uuid>`。
 - **`ephemeral` 消息 id 形如 `e<eventId>`**：避开 `messages.id` 命名空间，杜绝 delete 事件误删直播消息。
 - **`delete` 事件载荷为 `{id}`**（草案写作 `{message_id}`），与 MessageView.id 同字段。
-- **管理契约（Ruling B）**：登录 body `{secret}`、会话探测 `GET /api/admin/me → {authed:true}`、重复封禁幂等 upsert `200 {created:boolean}`（无 409）、会话有效 `ADMIN_SESSION_DAYS` 默认 7d；不再提供 `GET /api/admin/messages`（历史走公开端点）。
+- **管理契约**：登录 body `{secret}`、会话探测 `GET /api/admin/me → {authed:true}`、重复封禁幂等 upsert `200 {created:boolean}`（无 409）、会话有效 `ADMIN_SESSION_DAYS` 默认 7d；不再提供 `GET /api/admin/messages`（历史走公开端点）。
 - **`/api/messages` 契约收紧**：`before`/`since` 互斥（400 invalid_body）；`limit` 缺省 50、1–200 夹取、非纯数字 400 invalid_cursor；游标/`limit` 上界夹取 `MAX_ID_BOUND`（2³¹−1，PG serial/int4 安全）。
 - **messages 响应 `id` 一律字符串、`created_at` ISO 8601**；SSE 事件载荷 `created_at` 为 epoch ms 数字。
 - **`rate_limits` 表落地**（D16 第 5 表）：`bucket × scope × window_start` 复合主键，`ON CONFLICT … count=count+1 RETURNING count` 原子计数（双方言同 SQL）。
 - **存储层 = 手写可移植 SQL**（`lib/repo.ts` 双驱动 + `lib/ddl.ts` 按 provider 幂等 DDL；无 ORM）；`bans` 表以 `ip` 为 PRIMARY KEY（草案 §4 的独立 `id`+UNIQUE 收敛掉），保留 `banned_by` 审计列。
 - **限流/长度默认值对齐**（§6）：消息 10/min、开流 20/min、登录 5/min（60s 固定窗口）；text ≤ 1000。
 - **§10 待确认项结果**：双写事务（✓）、静态页随函数 `includeFiles`（✓）、`hono` 4.13 无 `node-serverless` 子路径 → `index.ts` 导出自持懒转发 handler（✓）、`Bun.serve idleTimeout` 上限 255（✓）、开流限流接线（✓）。**剩余仅云端实测**（Vercel 函数 300s/SSE 断线续传/`process.cwd()` 下 `public/` 落盘）——`docs/api.md` 已把断线重连列为客户端义务。
-- **入口导出形态修正（2026-09-11，线上挂起事故）**：原「自持懒转发 handler」为裸函数导出，被 Vercel 当作 `(req, res)` 处理器 → 全站挂起。现改为官方 `export default { async fetch(request) }`（保留懒 boot，无 TLA），并新增 `tests/integration/vercel-entry.test.ts` 形态回归护栏；云端已重新部署后需复核 `/api/meta`、`/demo.html`、`/api/stream`。
+- **入口导出形态**：`export default { async fetch(request) }`（保留懒启动、无顶层 await）；形态护栏见 `tests/integration/vercel-entry.test.ts`。

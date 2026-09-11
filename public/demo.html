@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>weblive-chat Demo（契约参考客户端）</title>
+<title>WebLive Chat · 实时聊天</title>
 <style>
   :root { color-scheme: light dark; }
   body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif; margin: 0; background: #f4f5f7; color: #1c1e21; }
@@ -32,11 +32,11 @@
 <body>
 <div class="wrap">
   <header>
-    <h1>weblive-chat Demo</h1>
+    <h1>WebLive Chat</h1>
     <span>在线 <b id="online">?</b> 人</span>
     <span class="muted">本机 IP：<span id="ip">…</span></span>
-    <a href="/admin">管理页</a>
-    <span id="status">init…</span>
+    <a href="/admin">管理后台</a>
+    <span id="status">连接中…</span>
   </header>
 
   <div class="card">
@@ -53,21 +53,12 @@
   </div>
 
   <details class="card">
-    <summary>契约参考：本 Demo 的关键行为</summary>
+    <summary>使用说明</summary>
     <ul class="muted">
-      <li><b>免登录</b>：发言无需账号；浏览器本地持久化 <code>wl.nick</code> 昵称与 <code>wl.client</code>（client_id UUID）——同一浏览器多标签共用同 id = 在线按「人」计（presence 去重）。</li>
-      <li><b>实时通道</b>：GET /api/stream?client_id=&amp;since= 的 SSE，断线固定 1s 重连（since 续传；真实客户端可换指数退避上限 ~30s）。</li>
-      <li><b>禁言自测</b>（D5 禁言不禁看）：下方输入管理口令后「封禁本机 IP」→ 此后本机 POST 消息得 403 banned，但本 SSE 流保持、仍可观看。</li>
+      <li><b>免登录</b>：无需注册，直接发言；昵称与客户端标识仅保存在本机浏览器，同一浏览器多标签视为同一人在线。</li>
+      <li><b>实时</b>：消息与在线人数经 SSE 长连接即时推送；网络中断后自动重连并续传，不会丢消息。</li>
+      <li><b>管理</b>：管理员可在 <a href="/admin">管理后台</a> 删除消息或封禁 IP；被封禁者无法发言，但仍可继续观看。</li>
     </ul>
-  </details>
-
-  <details class="card" id="selfBanBox">
-    <summary>禁言自测（封禁本机 IP）</summary>
-    <p class="muted">口令 = 部署环境变量 <code>ADMIN_SECRET</code>；生产未配置时服务拒绝启动，本地开发默认为 dev-insecure-secret。封禁后本机发消息将收到 403（观看不受影响）。</p>
-    <div class="row">
-      <input type="password" id="secret" placeholder="ADMIN_SECRET 口令">
-      <button id="selfBan">封禁本机 IP（<span id="selfIp">…</span>）</button>
-    </div>
   </details>
 </div>
 
@@ -157,8 +148,8 @@ async function loadHistory() {
     // 时间线约定「新在上、旧在下」：API 返回新→旧，逐个前插会排成旧在上 → 先逆转为旧→新再前插
     const msgs = j.messages.slice().reverse();
     for (const m of msgs) renderMessage(m);
-    if (j.mode === "ephemeral") setNote("（仅实时模式：历史已停止写入，以下为实时广播）");
-    else if (!msgs.length) setNote("（暂无消息，发一条试试）");
+    if (j.mode === "ephemeral") setNote("（存储容量已达上限，当前仅实时广播，不再保存历史）");
+    else if (!msgs.length) setNote("（还没有消息，来说第一句吧）");
     else setNote(null);
   } catch { setNote(null); /* 网络/JSON 错误静默，等 SSE 侧自行恢复 */ }
 }
@@ -180,14 +171,14 @@ async function send() {
     if (!res.ok) {
       $("text").value = text; // 失败还原输入
       notice((j && j.error && j.error.message) || res.status + " 发送失败", true);
-      if (res.status === 403) setStatus("本机已被禁言（禁发不禁看）", "bad");
+      if (res.status === 403) setStatus("本机已被禁言", "bad");
       return;
     }
     notice("");
   } catch { $("text").value = text; notice("网络异常，发送失败", true); }
 }
 
-// —— 手写 SSE 读取器：契约重连示范（断线固定 1s；since 续传游标）——
+// —— SSE 读取与自动重连（断线 1s 后携带 since 游标续传）——
 let since = 0; // SSE 续传游标：0 = 从头开始；由 handleBlock 的 bumpSince 单调推进（见下）
 async function connect() {
   while (!esClosed) {
@@ -235,10 +226,10 @@ function handleBlock(block) {
   } else if (type === "presence" && data) {
     $("online").textContent = String(data.online);
   } else if (type === "ban") {
-    setStatus("本机已被禁言（禁发不禁看）", "bad");
-    notice("封禁提示：" + ((data && data.reason) || "本机 IP 已被禁言"));
+    setStatus("本机已被禁言", "bad");
+    notice("本机已被管理员禁言：" + ((data && data.reason) || "未说明原因"));
   } else if (type === "notice" && data && data.kind === "history_mode") {
-    notice("服务端通知：持久化模式 → " + data.mode + "（保留 " + String(data.retention_days) + " 天）");
+    notice("历史保存模式已切换为 " + data.mode + "（保留 " + String(data.retention_days) + " 天）");
   } else if (type === "error") {
     notice("流错误：" + ((data && data.message) || JSON.stringify(data)), true);
   }
@@ -256,25 +247,6 @@ function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 $("send").onclick = send;
 $("text").addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
 $("nick").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); $("text").focus(); } });
-$("selfBan").onclick = async () => {
-  const ip = $("selfIp").textContent;
-  if (!ip || ip.indexOf("…") >= 0) { alert("尚未取得本机 IP"); return; }
-  try {
-    const res = await fetch("/api/admin/login", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ secret: $("secret").value }),
-    });
-    const j = await res.json().catch(() => null);
-    if (!res.ok) { alert("登录失败：" + ((j && j.error && j.error.message) || res.status)); return; }
-    const res2 = await fetch("/api/admin/bans", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ ip, reason: "demo 自测封禁" }),
-    });
-    const j2 = await res2.json().catch(() => null);
-    if (!res2.ok) { alert("封禁失败：" + ((j2 && j2.error && j2.error.message) || res2.status)); return; }
-    alert("已封禁本机 IP " + ip + "（禁言不禁看：接下来发言会收到 403，观看不受影响）。可在管理页解封。");
-  } catch (e) { alert("请求异常：" + e.message); }
-};
 
 (async () => {
   try {
@@ -284,7 +256,6 @@ $("selfBan").onclick = async () => {
       $("nick").maxLength = meta.limits.nick_max || 24;
       $("text").maxLength = meta.limits.text_max || 1000;
     }
-    if (meta.presence) $("selfIp").textContent = meta.client_ip || "未知";
   } catch {}
   await loadHistory();
   connect();

@@ -1,12 +1,12 @@
-# weblive-chat API 契约 v0.1
+# WebLive Chat API 参考（v1）
 
-权威来源：`docs/superpowers/specs/2026-09-09-weblive-chat-backend-design.md` §5；本文档按**实现后契约**逐项校正（实现为最终事实）。
+本文档描述当前对外接口契约；改动请保持向后兼容并同步更新本文件。
 
 - 时间：响应中的 `created_at` 一律 **ISO 8601 UTC**（SSE 事件载荷内为 **epoch 毫秒数字**，见下）。
 - `id` / 游标：JSON 中一律**字符串**（数据库为整数自增）。
 - 错误统一信封：`{"error": {"code": string, "message": string, "retry_after_ms"?: number, "reason"?: string}}`。
 - 需 JSON body 的接口要求 `Content-Type: application/json`。
-- 在线人数/封禁语义：见设计规格 §5（presence 按 `client_id` 去重；封禁=禁言不禁看）。
+- 在线人数按 `client_id` 去重（同一浏览器多标签计 1 人）；封禁为**禁言不禁看**：被封 IP 无法发言，但可继续观看。
 
 ## 1. 公开端点（免登录）
 
@@ -75,7 +75,7 @@
 > 管理端不提供消息列表查询——消息查看走公开 `GET /api/messages`（软删占位同样透出），避免重复契约面。
 > 管理端点与公开端点共用 `/api/*` 的 Origin 白名单中间件；Cookie 的 SameSite=Lax 使管理接口仅同源可用（跨源自建管理前端需显式列入 `ALLOWED_ORIGINS` 并自行处理 credentials）。
 
-## 3. Origin 白名单（§6.1）
+## 3. Origin 白名单
 
 | 配置 | 行为 |
 |---|---|

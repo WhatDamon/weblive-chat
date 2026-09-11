@@ -1,4 +1,4 @@
-# weblive-chat
+# WebLive Chat
 
 免登录、可**直接部署到 Vercel** 的实时聊天后端：通过 SSE + POST 向多个前端广播消息与**在线人数**，可配置的聊天记录持久化（超限自动收缩/降级），并内置管理页供管理员**禁言封禁 IP** 与软删违规消息。
 
@@ -24,7 +24,7 @@
 - **防滥用**：每 IP 分桶限流（消息/开流/登录）、昵称/内容长度上限、可选禁词（子串匹配）。
 - **可移植存储**：`DB_PROVIDER` 一键切换 SQLite（本地 `file:` / 生产 Turso）或任意 Postgres（Neon / Supabase / 自托管）——业务与 API 契约代码零改动。
 
-技术栈：Bun（本地开发/测试）、Hono（双运行时：Bun.serve + Vercel Node）、SSE；存储层为**手写可移植 SQL**（`@libsql/client` / `postgres.js`，本期不引 ORM，建表走启动幂等 DDL）。
+技术栈：Bun（本地开发/运行）、Hono（双运行时：Bun.serve + Vercel Node）、SSE；存储层为**手写可移植 SQL**（`@libsql/client` / `postgres.js`，不引入 ORM，建表走启动幂等 DDL）。
 
 ## 快速开始
 
@@ -36,8 +36,8 @@ cp .env.example .env          # 本地默认 file: SQLite，零外部依赖
 bun run dev                   # http://localhost:3000
 ```
 
-- 验证 Demo（聊天/历史/在线人数/自封自测）：打开 <http://localhost:3000/demo.html>
-- 管理页：<http://localhost:3000/admin>（本地未设 `ADMIN_SECRET` 时的开发口令为 `dev-insecure-secret`）
+- 聊天室：<http://localhost:3000/demo.html>（实时推送、历史记录、在线人数）
+- 管理后台：<http://localhost:3000/admin>（本地开发未设置 `ADMIN_SECRET` 时使用内置开发口令；生产环境必须显式配置）
 
 常用命令：
 
@@ -45,10 +45,10 @@ bun run dev                   # http://localhost:3000
 |---|---|
 | `bun run dev` | 本地热重载开发服务器 |
 | `bun run start` | 本地单次启动（同 dev 无热重载） |
-| `bun test` | 全部测试（默认跑本地文件 SQLite） |
-| `bun run test:pg` | 同一套集成用例跑 Postgres（需先设 `DATABASE_URL`） |
+| `bun test` | 全部测试（默认使用本地文件 SQLite） |
+| `bun run test:pg` | 同一套集成测试跑 Postgres（需先设 `DATABASE_URL`） |
 | `bun run typecheck` | `tsc --noEmit` 类型检查 |
-| `bun tests/e2e/e2e-acceptance.ts` | 本地端到端验收（真实启动服务器，跨功能链断言） |
+| `bun tests/e2e/smoke.ts` | 端到端冒烟（真实启动服务器，覆盖跨功能链路） |
 
 ## 环境变量
 
@@ -60,7 +60,7 @@ bun run dev                   # http://localhost:3000
 | `DATABASE_URL` | `file:./data/dev.db` | 见下「存储形态」；`postgres` 时必须为 `postgres://…`；`memory` 时忽略 |
 | `TURSO_AUTH_TOKEN` | 空 | 仅 Turso（`libsql://`）需要 |
 | `DB_MIGRATE_ON_BOOT` | `true` | 启动幂等建表（`CREATE TABLE IF NOT EXISTS`）；`"false"` 关闭 |
-| `ADMIN_SECRET` | 开发回退 `dev-insecure-secret` | 管理口令；**生产（`NODE_ENV=production`）缺失即拒绝启动** |
+| `ADMIN_SECRET` | 仅本地开发有内置回退值 | 管理后台口令；**生产（`NODE_ENV=production`）缺失即拒绝启动**，请设为长随机串 |
 | `NODE_ENV` | `development` | Vercel 自动设为 `production` |
 | `ALLOWED_ORIGINS` | 空（开放） | 逗号分隔精确 Origin，如 `https://a.com,http://localhost:3000`；一旦设置即白名单 fail-closed。⚠️ **设置时须把部署自身域名一并列入**（同源 `/demo.html`、`/admin` 页与同源前端，浏览器对 POST 必带 Origin），否则内置页面/同源应用的写请求会被 403 拒 |
 | `REQUIRE_ORIGIN` | `0` | `1` 时无 Origin 的直连（curl/脚本）也拒绝（`403 missing_origin`） |
@@ -113,16 +113,16 @@ turso db show weblive-chat --url          # → libsql://weblive-chat-<org>.turs
 turso db tokens create weblive-chat      # → 粘贴到 TURSO_AUTH_TOKEN
 ```
 
-Neon / Supabase / 自托管 Postgres：连接串形如 `postgres://…?sslmode=require`，`DB_PROVIDER=postgres` 即可。Neon 免费档按 CU 小时计费——长连轮询会让 compute 7×24 活跃，请仅在低流量演示时选用（详见设计规格 §7.1）。
+Neon / Supabase / 自托管 Postgres：连接串形如 `postgres://…?sslmode=require`，`DB_PROVIDER=postgres` 即可。注意 Neon 免费档按 CU 小时计费——长连轮询会让 compute 全天候活跃，建议仅在低流量场景选用。
 
-平台时长提示：Vercel 函数单次最长 300s（Hobby），SSE 流到点断开属**预期行为**——客户端用 `since` 自动重连续传即可（内置 demo 已示范固定 1s 重连）。
+平台时长提示：Vercel 函数单次最长 300s（Hobby 档；Pro/Enterprise 更高），SSE 流到点断开属**预期行为**——客户端携带 `since` 自动重连续传即可（内置页面已实现）。
 
 ## 文档
 
 - **API 契约速查**：`docs/api.md`（端点 / SSE 事件 / 错误码 / Origin 白名单 / curl 示例）
-- **完整设计规格**：`docs/superpowers/specs/2026-09-09-weblive-chat-backend-design.md`（决策、数据模型、容量成本、测试策略）
+- **完整设计文档**：`docs/design.md`（架构决策、数据模型、容量与成本、测试策略）
 
-## 已知边界（MVP 取舍）
+## 已知边界与取舍
 
 - **禁词为子串匹配**：对中文易误伤（如禁「赌博」会命中含该子串的任意文本），仅服务端下发、无客户端过滤器。
 - **封禁为精确 IP**：同 NAT/CGNAT 下可能波及无辜用户；IPv6 支持但前缀/CIDR 封禁留待后续。
