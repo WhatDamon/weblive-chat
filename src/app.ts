@@ -7,7 +7,11 @@ import { registerChat } from "./routes/chat";
 import { registerAdmin } from "./routes/admin";
 import { registerPages } from "./routes/pages";
 import { newHistoryState, performMaintenance } from "./lib/history";
-import { buildWordFilter, loadWordFilter, type WordFilter } from "./lib/wordfilter";
+import {
+  buildWordFilter,
+  loadWordFilter,
+  type WordFilter,
+} from "./lib/wordfilter";
 
 export interface AppDeps {
   cfg: AppConfig;

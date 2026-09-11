@@ -90,7 +90,8 @@ export function loadConfig(
     bannedWordsMode !== "off" &&
     bannedWordsMode !== "basic" &&
     bannedWordsMode !== "strict"
-  )    throw new Error(
+  )
+    throw new Error(
       `BANNED_WORDS_MODE 仅支持 off|basic|strict，收到 "${bannedWordsMode}"`,
     );
   const rateWindowMs = 60_000;

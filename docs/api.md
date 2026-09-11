@@ -1,6 +1,6 @@
 # WebLive Chat API 参考（v1）
 
-本文档描述当前对外接口契约；改动请保持向后兼容并同步更新本文件。
+本文档描述当前对外接口契约；改动请保持向后兼容并同步更新本文件。接入路线、客户端契约（重连/双游标/补齐）与排查见 [`integration.md`](./integration.md)。
 
 - 时间：响应中的 `created_at` 一律 **ISO 8601 UTC**（SSE 事件载荷内为 **epoch 毫秒数字**，见下）。
 - `id` / 游标：JSON 中一律**字符串**（数据库为整数自增）。
@@ -27,7 +27,7 @@
   `MessageView = {id: string, client_id: string, nick: string, text: string|null, deleted: boolean, created_at: ISO8601}`
   （软删消息：`deleted: true` 且 `text: null`，占位行保留）。
 - `POST /api/messages` 校验顺序：**格式/禁词（不耗限流预算、不触发 DB）→ 封禁（`403 banned`，含 `reason`）→ 限流（`429 rate_limited`）→ 写入**。
-  - 400 子码：`invalid_body`（非 JSON）、`invalid_uuid`、`nick_empty`、`nick_too_long`、`text_empty`、`text_too_long`、`banned_word`（昵称与内容都检查，`field` 指出命中字段）。
+  - 400 子码：`invalid_body`（非 JSON）、`invalid_uuid`、`nick_empty`、`nick_too_long`、`text_empty`、`text_too_long`、`banned_word`（昵称与内容都会检查；响应不指出具体字段，也不回显命中的词）。
   - 201 响应 `id` 为字符串消息 id；`ephemeral` 模式仅广播不落历史，`id` 形如 `"e<eventId>"`（标识直播消息，不可回溯）。
   - 存储故障 → `503 db_unavailable`。
 - `GET /api/stream` 参数：

@@ -346,7 +346,33 @@ async function main() {
     check("历史模式 full 透出", b?.mode === "full");
   }
 
-  // 9. 收尾：关流、停服、持久化复查
+  // 9. 示例客户端实跑（docs/integration.md 指向的 examples/client.mjs 必须真的能用）
+  {
+    const cli = spawn("bun", ["examples/client.mjs", base, "冒烟"], {
+      cwd: ROOT,
+      env: { ...process.env } as Record<string, string>,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let cliOut = "";
+    cli.stdout!.on("data", (d) => (cliOut += d.toString()));
+    cli.stderr!.on("data", (d) => (cliOut += d.toString()));
+    const exited = new Promise<void>((r) => cli.on("exit", () => r()));
+    // 脚本内部：建流 → 1.5s 后发言 → 经 SSE 收到自己的消息；给 8s 窗口后收尾
+    await Promise.race([
+      exited,
+      new Promise<void>((r) => setTimeout(r, 8000)),
+    ]);
+    if (cli.exitCode === null) cli.kill("SIGTERM");
+    const lines = cliOut.split("\n").filter(Boolean);
+    check(
+      "示例客户端实跑：身份持久化 + 建流 + 发言回显",
+      cliOut.includes("身份 client_id=") &&
+        /冒烟: 来自接入示例的消息/.test(cliOut),
+      lines.slice(0, 3).join(" | "),
+    );
+  }
+
+  // 10. 收尾：关流、停服、持久化复查
   streamAbort.abort();
   await stopServer();
   {

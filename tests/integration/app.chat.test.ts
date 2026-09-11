@@ -101,7 +101,10 @@ describe("chat 公开端点", () => {
   test("词库：basic 模式从磁盘加载精选词表，错误响应不回显命中词", async () => {
     const dir = mkdtempSync(join(tmpdir(), "wl-words-"));
     mkdirSync(join(dir, "basic"));
-    writeFileSync(join(dir, "basic", "porn.txt"), "# 精选表（含注释行）\n测试违禁词A\n");
+    writeFileSync(
+      join(dir, "basic", "porn.txt"),
+      "# 精选表（含注释行）\n测试违禁词A\n",
+    );
     const { app } = await boot({
       bannedWordsMode: "basic",
       bannedWordsDir: dir,
@@ -127,7 +130,8 @@ describe("chat 公开端点", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  test("禁言：命中 bans 的 IP POST → 403 banned（含 reason）；未被禁 IP 正常", async () => {    const { app, repo } = await boot();
+  test("禁言：命中 bans 的 IP POST → 403 banned（含 reason）；未被禁 IP 正常", async () => {
+    const { app, repo } = await boot();
     await repo.banUpsert("8.8.8.8", "spam", "admin", Date.now());
     const res = await app.request("/api/messages", {
       method: "POST",

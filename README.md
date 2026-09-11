@@ -49,6 +49,7 @@ bun run dev                   # http://localhost:3000
 | `bun run test:pg` | 同一套集成测试跑 Postgres（需先设 `DATABASE_URL`） |
 | `bun run typecheck` | `tsc --noEmit` 类型检查 |
 | `bun tests/e2e/smoke.ts` | 端到端冒烟（真实启动服务器，覆盖跨功能链路） |
+| `bun examples/client.mjs [地址] [昵称]` | 独立示例客户端，连本地或线上部署（详见 `docs/integration.md`） |
 
 ## 环境变量
 
@@ -132,7 +133,9 @@ Neon / Supabase / 自托管 Postgres：连接串形如 `postgres://…?sslmode=r
 
 ## 文档
 
+- **接入指南**：`docs/integration.md`（把聊天接进你自己的前端：客户端契约、断线重连、双游标、跨域、排查）
 - **API 契约速查**：`docs/api.md`（端点 / SSE 事件 / 错误码 / Origin 白名单 / curl 示例）
+- **可运行示例客户端**：`examples/client.mjs`（零依赖，`bun examples/client.mjs <部署地址>` 即可连）
 - **完整设计文档**：`docs/design.md`（架构决策、数据模型、容量与成本、测试策略）
 
 ## 已知边界与取舍
