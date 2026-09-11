@@ -671,7 +671,8 @@ class MemoryRepo implements Repo {
       .map(([ip, b]) => ({ ip, reason: b.reason, created_at: b.created_at }))
       .sort(
         (a, b) =>
-          b.created_at - a.created_at || (a.ip < b.ip ? 1 : a.ip > b.ip ? -1 : 0),
+          b.created_at - a.created_at ||
+          (a.ip < b.ip ? 1 : a.ip > b.ip ? -1 : 0),
       )
       .slice(offset, offset + limit);
   }

@@ -8,9 +8,7 @@ import type { AppConfig, Provider } from "../src/lib/config";
 
 export type TestProvider = Provider;
 
-export async function makeRepo(
-  explicit?: TestProvider,
-): Promise<{
+export async function makeRepo(explicit?: TestProvider): Promise<{
   repo: Repo;
   cleanup: () => Promise<void>;
 }> {

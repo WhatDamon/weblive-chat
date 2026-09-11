@@ -57,11 +57,7 @@ export function loadConfig(
   env: Record<string, string | undefined> = {},
 ): AppConfig {
   const provider = env.DB_PROVIDER ?? "sqlite";
-  if (
-    provider !== "sqlite" &&
-    provider !== "postgres" &&
-    provider !== "memory"
-  )
+  if (provider !== "sqlite" && provider !== "postgres" && provider !== "memory")
     throw new Error(
       `DB_PROVIDER 仅支持 sqlite|postgres|memory，收到 "${provider}"`,
     );

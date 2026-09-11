@@ -319,7 +319,9 @@ tests/                # bun test（单元为主）
 ## 10. 待实现期确认的技术细节（非契约）
 
 - SSE 在 Vercel 实测：官方文档 Hobby 默认/最大时长均 300s（fluid compute），验证空闲不提前断流、断点重连与 presence TTL 衔接。
-- 单函数部署形态实测：`src/index.ts` 默认导出 `handle(app)`（hono/node-serverless）承接全部路由，`vercel.json` 用 `builds` + `@vercel/node`；本地 Bun.serve 同进程跑同一 app。
+- 单函数部署形态实测：`src/index.ts` 默认导出 **Web handler 对象 `{ fetch(request) }`**（Vercel Node 运行时唯一接受的三种形态之一：`{ fetch }` / 具名 `GET|POST…` / 自带 `.fetch` 的框架实例）承接全部路由，`vercel.json` 用 `builds` + `@vercel/node`；本地 Bun.serve 同进程跑同一 app。
+  - ⚠️ **线上事故教训（2026-09-11）**：曾导出**裸函数** `export default async (req: Request) => Response`——Vercel 将其当作旧式 `(req, res)` 处理器调用，函数从不写 `res` → 响应永不下发，表现为**整站 0 字节挂起直至函数超时**（连静态页也挂，因 catch-all 把全部路由都指向该函数）。修复：改回 `{ fetch }` 形态；护栏 `tests/integration/vercel-entry.test.ts` 锁死该形态并按运行时约定直接调 `default.fetch(Request)`。
+  - 模块顶层**不得出现 top-level await**（`@vercel/node` 产物可能转 CJS）；dev 入口改用 `void buildApp().then(...)`。
 - 驱动实测：`@libsql/client`（file: 与 libsql://）与 `postgres.js` 在 Bun/Node 双运行时行为；本地 `file:` 与远端 Turso 的一致性。
 - 发消息 events + messages 双写须在同一事务内（SQLite batch / PG begin），失败整体回滚。
 - "平均行字节"估算与保留行数统计的实现成本（`COUNT` 每 ~100 次写入评估一次），避免每次写入全表扫描。
@@ -340,3 +342,4 @@ tests/                # bun test（单元为主）
 - **存储层 = 手写可移植 SQL**（`lib/repo.ts` 双驱动 + `lib/ddl.ts` 按 provider 幂等 DDL；无 ORM）；`bans` 表以 `ip` 为 PRIMARY KEY（草案 §4 的独立 `id`+UNIQUE 收敛掉），保留 `banned_by` 审计列。
 - **限流/长度默认值对齐**（§6）：消息 10/min、开流 20/min、登录 5/min（60s 固定窗口）；text ≤ 1000。
 - **§10 待确认项结果**：双写事务（✓）、静态页随函数 `includeFiles`（✓）、`hono` 4.13 无 `node-serverless` 子路径 → `index.ts` 导出自持懒转发 handler（✓）、`Bun.serve idleTimeout` 上限 255（✓）、开流限流接线（✓）。**剩余仅云端实测**（Vercel 函数 300s/SSE 断线续传/`process.cwd()` 下 `public/` 落盘）——`docs/api.md` 已把断线重连列为客户端义务。
+- **入口导出形态修正（2026-09-11，线上挂起事故）**：原「自持懒转发 handler」为裸函数导出，被 Vercel 当作 `(req, res)` 处理器 → 全站挂起。现改为官方 `export default { async fetch(request) }`（保留懒 boot，无 TLA），并新增 `tests/integration/vercel-entry.test.ts` 形态回归护栏；云端已重新部署后需复核 `/api/meta`、`/demo.html`、`/api/stream`。

@@ -82,9 +82,9 @@ function contract(provider: TestProvider) {
 
     test("封禁：upsert 幂等、get/list/remove", async () => {
       const { repo, cleanup } = await makeRepo(provider);
-      expect(
-        await repo.banUpsert("1.2.3.4", "spam", "admin", Date.now()),
-      ).toBe(true);
+      expect(await repo.banUpsert("1.2.3.4", "spam", "admin", Date.now())).toBe(
+        true,
+      );
       expect(
         await repo.banUpsert("1.2.3.4", "spam2", "admin", Date.now()),
       ).toBe(false); // 已存在
