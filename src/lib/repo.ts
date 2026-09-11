@@ -2,6 +2,13 @@ import { createClient, type Client } from "@libsql/client";
 import postgres from "postgres";
 import type { Provider } from "./config";
 import { ddlFor } from "./ddl";
+import {
+  PURGE_ALL_TABLES,
+  PURGE_TABLES,
+  type PurgeCounts,
+  type PurgeScope,
+  type PurgeTable,
+} from "./purge";
 
 export interface MessageRow {
   id: number;
@@ -73,6 +80,11 @@ export interface Repo {
   cleanupRateLimits(before: number): Promise<number>;
   trimMessagesBelow(idFloor: number): Promise<number>;
   deleteMessagesOlderThan(cutoff: number): Promise<number>;
+  /** 危险操作·预检：各表当前物理行数（只读，不修改任何数据）。 */
+  purgeCounts(): Promise<PurgeCounts>;
+  /** 危险操作·执行：按档位白名单清空数据，返回各表**实际删除行数**（未涉及的表恒为 0）。
+   * 档位 → 表 的映射由 PURGE_TABLES 唯一决定，调用方无法指定任意表名。 */
+  clearData(scope: PurgeScope): Promise<PurgeCounts>;
 }
 
 const mapMessage = (r: any): MessageRow => ({
@@ -127,7 +139,39 @@ const SQL = {
   delRates: "DELETE FROM rate_limits WHERE window_start < ?",
   trimBelow: "DELETE FROM messages WHERE id < ?",
   delOlder: "DELETE FROM messages WHERE created_at < ?",
+  // 危险操作（清空）：计数与全表删除分开命名，避免与上面带 WHERE 的清理语句混用
+  cntMessages: "SELECT COUNT(*) AS c FROM messages",
+  cntEvents: "SELECT COUNT(*) AS c FROM events",
+  cntPresence: "SELECT COUNT(*) AS c FROM presence",
+  cntBans: "SELECT COUNT(*) AS c FROM bans",
+  cntRateLimits: "SELECT COUNT(*) AS c FROM rate_limits",
 };
+
+/** 档位白名单 → 全表删除语句（三驱动共用同一套 ? 占位模板）。 */
+const DELETE_ALL_SQL: Record<PurgeTable, string> = {
+  messages: "DELETE FROM messages",
+  events: "DELETE FROM events",
+  presence: "DELETE FROM presence",
+  rate_limits: "DELETE FROM rate_limits",
+  bans: "DELETE FROM bans",
+};
+
+const COUNT_SQL: Record<PurgeTable, string> = {
+  messages: SQL.cntMessages,
+  events: SQL.cntEvents,
+  presence: SQL.cntPresence,
+  rate_limits: SQL.cntRateLimits,
+  bans: SQL.cntBans,
+};
+
+/** 固定遍历顺序（仅影响响应里的字段顺序，与语义无关）。 */
+const emptyCounts = (): PurgeCounts => ({
+  messages: 0,
+  events: 0,
+  presence: 0,
+  rate_limits: 0,
+  bans: 0,
+});
 
 /** PG 专用：借助 xmax=0（本语句新插入）区分「新增」与「冲突后更新」，实现 true=新建/false=已存在。 */
 const banUpsertPg = `INSERT INTO bans (ip, reason, banned_by, created_at) VALUES (?, ?, ?, ?)
@@ -323,6 +367,31 @@ class SqliteRepo implements Repo {
   async deleteMessagesOlderThan(cutoff: number): Promise<number> {
     return this.affected(SQL.delOlder, [cutoff]);
   }
+  /** 危险操作：白名单档位内的表在同一写事务内全清（部分失败则整体回滚，不留半清状态）。 */
+  async clearData(scope: PurgeScope): Promise<PurgeCounts> {
+    const tx = await this.c.transaction("write");
+    try {
+      const deleted = emptyCounts();
+      for (const t of PURGE_TABLES[scope]) {
+        const r = await tx.execute(DELETE_ALL_SQL[t]);
+        deleted[t] = Number(r.rowsAffected);
+      }
+      await tx.commit();
+      return deleted;
+    } catch (err) {
+      await tx.rollback().catch(() => {});
+      throw err;
+    }
+  }
+  async purgeCounts(): Promise<PurgeCounts> {
+    const out = emptyCounts();
+    for (const t of PURGE_ALL_TABLES) out[t] = await this.countOf(COUNT_SQL[t]);
+    return out;
+  }
+  private async countOf(sql: string): Promise<number> {
+    const r = await this.run<any[]>(sql, []);
+    return Number(r[0]?.c ?? 0);
+  }
   private async affected(sql: string, args: unknown[]): Promise<number> {
     const r = await this.c.execute({ sql, args: args as any[] });
     return Number(r.rowsAffected);
@@ -352,6 +421,26 @@ class PostgresRepo implements Repo {
   private async exec(sql: string, args: unknown[]): Promise<void> {
     const { sql: s, args: a } = this.toPgParams(sql, args);
     await this.sql.unsafe(s, a);
+  }
+  /** 危险操作：白名单档位内的表在同一事务内全清（PG 逐表 DELETE，失败整体回滚）。 */
+  async clearData(scope: PurgeScope): Promise<PurgeCounts> {
+    return await this.sql.begin(async (tx) => {
+      const deleted = emptyCounts();
+      for (const t of PURGE_TABLES[scope]) {
+        const r = await tx.unsafe(DELETE_ALL_SQL[t], []);
+        deleted[t] = r.count === undefined ? 0 : Number(r.count);
+      }
+      return deleted;
+    });
+  }
+  async purgeCounts(): Promise<PurgeCounts> {
+    const out = emptyCounts();
+    // COUNT(*) 在 PG 里是 bigint → 文本返回，必须 Number() 归一
+    for (const t of PURGE_ALL_TABLES) {
+      const r = await this.sql.unsafe(COUNT_SQL[t], []);
+      out[t] = Number(r[0]?.c ?? 0);
+    }
+    return out;
   }
   private async countAffected(sql: string, args: unknown[]): Promise<number> {
     const { sql: s, args: a } = this.toPgParams(sql, args);
@@ -736,6 +825,44 @@ class MemoryRepo implements Repo {
     const len = this.messages.length;
     this.messages = this.messages.filter((r) => r.created_at >= cutoff);
     return len - this.messages.length;
+  }
+  async purgeCounts(): Promise<PurgeCounts> {
+    return this.countsNow();
+  }
+  async clearData(scope: PurgeScope): Promise<PurgeCounts> {
+    // 单线程 JS：逐表清空不具备“半清”窗口，无需事务
+    const before = this.countsNow();
+    const deleted = emptyCounts();
+    for (const t of PURGE_TABLES[scope]) {
+      switch (t) {
+        case "messages":
+          this.messages = [];
+          break;
+        case "events":
+          this.events = [];
+          break;
+        case "presence":
+          this.presence.clear();
+          break;
+        case "rate_limits":
+          this.rates.clear();
+          break;
+        case "bans":
+          this.bans.clear();
+          break;
+      }
+      deleted[t] = before[t];
+    }
+    return deleted;
+  }
+  private countsNow(): PurgeCounts {
+    return {
+      messages: this.messages.length,
+      events: this.events.length,
+      presence: this.presence.size,
+      rate_limits: this.rates.size,
+      bans: this.bans.size,
+    };
   }
 }
 

@@ -8,8 +8,19 @@ import {
   clientIpFromHeaders,
   normalizeIp,
 } from "../lib/security";
-import { rateCheck } from "../lib/limits";
+import { rateCheck, windowStartFor } from "../lib/limits";
 import { jsonError, readJson, parseIdParam } from "../lib/http";
+import {
+  PURGE_ALL_TABLES,
+  PURGE_PHRASES,
+  PURGE_SCOPE_DESC,
+  PURGE_TABLES,
+  isPurgeScope,
+  mintPurgeToken,
+  purgePhraseMatches,
+  verifyPurgeToken,
+  type PurgeTokenReason,
+} from "../lib/purge";
 
 export interface AdminDeps {
   cfg: AppConfig;
@@ -22,6 +33,13 @@ export interface AdminDeps {
 }
 
 const COOKIE_FLAGS = "HttpOnly; SameSite=Lax; Path=/";
+
+/** 令牌校验失败原因 → 给操作者的可操作提示（仅管理端可见，不含任何敏感值）。 */
+const PURGE_TOKEN_MSG: Record<PurgeTokenReason, string> = {
+  invalid_token: "预检令牌无效或已过期，请重新预检",
+  token_scope: "预检令牌与当前档位不符，请重新预检",
+  token_ip: "预检令牌与发起 IP 不符，请重新预检",
+};
 export function cookieHeader(
   cfg: AppConfig,
   token: string,
@@ -173,6 +191,102 @@ export function registerAdmin(app: Hono, d: AdminDeps) {
       // 软删占位广播：delete 事件（payload 只含消息 id，无操作者 IP——隐私约束）
       await repo.insertEvent("delete", JSON.stringify({ id: String(id) }), now);
       return c.body(null, 204);
+    } catch {
+      return jsonError(c, 503, "db_unavailable");
+    }
+  });
+
+  // ---------------- 危险操作：清空数据 ----------------
+  // 校验链条（任一环不过都触达不到删除）：管理员会话 → 限流（预检与执行共用同一桶）
+  // → 档位白名单 → 逐字确认短语 → 二次口令（重输 ADMIN_SECRET）
+  // → 一次性令牌（HMAC 签名 + 60s 有效期 + 绑定档位/发起 IP + 单次使用）→ 事务内清空
+  const purgeRateGate = async (c: Context, ip: string) => {
+    try {
+      const rl = await rateCheck(repo, "purge", ip, cfg.rate.purgePerMin);
+      if (rl.allowed) return null;
+      return jsonError(c, 429, "rate_limited", {
+        retry_after_ms: rl.retryAfterMs,
+      });
+    } catch {
+      return jsonError(c, 503, "db_unavailable");
+    }
+  };
+
+  // 阶段一：预检。只读，返回影响面与确认短语，并下发一次性令牌（本身不删任何数据）。
+  app.post("/api/admin/purge/preview", guard, async (c) => {
+    const ip = ipOf(c);
+    const gate = await purgeRateGate(c, ip);
+    if (gate) return gate;
+    const body = await readJson(c);
+    const scope = (body as { scope?: unknown } | null)?.scope;
+    if (!isPurgeScope(scope))
+      return jsonError(c, 400, "invalid_body", {
+        message: "scope 必须是 chat 或 full",
+      });
+    try {
+      const counts = await repo.purgeCounts();
+      const { token, expiresAt } = mintPurgeToken({ scope, ip }, cfg.adminSecret);
+      const willDelete = PURGE_TABLES[scope];
+      return c.json({
+        scope,
+        scope_desc: PURGE_SCOPE_DESC[scope],
+        will_delete: willDelete,
+        keep: PURGE_ALL_TABLES.filter((t) => !willDelete.includes(t)),
+        counts,
+        // 短语由服务端下发，避免 UI 与校验逻辑措辞漂移
+        confirm_phrase: PURGE_PHRASES[scope],
+        token,
+        expires_at: expiresAt,
+      });
+    } catch {
+      return jsonError(c, 503, "db_unavailable");
+    }
+  });
+
+  // 阶段二：执行。必须携带预检下发的令牌 + 逐字短语 + 重输的口令。
+  app.post("/api/admin/purge", guard, async (c) => {
+    const ip = ipOf(c);
+    const gate = await purgeRateGate(c, ip);
+    if (gate) return gate;
+    const body = await readJson(c);
+    if (!body) return jsonError(c, 400, "invalid_body");
+    const scope = body.scope;
+    if (!isPurgeScope(scope))
+      return jsonError(c, 400, "invalid_body", {
+        message: "scope 必须是 chat 或 full",
+      });
+    // 逐字确认短语（服务端再校一次，不信任前端校验）
+    if (!purgePhraseMatches(scope, body.confirm))
+      return jsonError(c, 400, "invalid_confirm", {
+        message: `确认短语需逐字输入「${PURGE_PHRASES[scope]}」`,
+      });
+    // 二次口令：会话 cookie 之外再证明一次持有 ADMIN_SECRET（cookie 被盗不足以清库）
+    if (typeof body.secret !== "string" || body.secret !== cfg.adminSecret)
+      return jsonError(c, 401, "invalid_secret");
+    const verdict = verifyPurgeToken(
+      typeof body.token === "string" ? body.token : undefined,
+      { scope, ip },
+      cfg.adminSecret,
+    );
+    if (!verdict.ok)
+      return jsonError(c, 400, "invalid_token", {
+        message: PURGE_TOKEN_MSG[verdict.reason],
+      });
+    try {
+      // 单次使用记账：nonce 落在**当前** 60s 窗口，第二次调用即 >1。
+      // （令牌本身 60s 过期，窗口一过该记账行会被常规清理回收；
+      //   full 档会连 rate_limits 一起清空 → 已清空的库上重放无额外危害）
+      const used = await repo.rateHit("purge_used", verdict.nonce, windowStartFor());
+      if (used > 1)
+        return jsonError(c, 400, "invalid_token", {
+          message: "该预检令牌已被使用，请重新预检",
+        });
+      const deleted = await repo.clearData(scope);
+      // 审计留痕：数据已销毁，只能靠平台日志追溯（不含消息内容/口令等敏感值）
+      console.error(
+        `[audit] purge scope=${scope} ip=${ip} deleted=${JSON.stringify(deleted)}`,
+      );
+      return c.json({ scope, deleted });
     } catch {
       return jsonError(c, 503, "db_unavailable");
     }

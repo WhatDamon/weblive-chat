@@ -196,8 +196,12 @@ SSE 事件类型：
 | `DELETE /api/admin/bans/:ip` | 解封（204/404） |
 | `DELETE /api/admin/messages/:id` | 软删（占位行保留、text 清空、`deleted_by='admin'` 固定标识、不存操作者 IP）→ 写 `delete` 出站事件（payload 仅 `{id}`） |
 | `GET /api/admin/stats` | `{online, messages_total, messages_retained, history: {mode, retention_days, estimate_bytes}}` —— 暴露存储用量与当前持久化模式，超限前给预警；读取时顺带触发维护刷新档位（借维护节拍，写/读共用同一计数器） |
+| `POST /api/admin/purge/preview` | 危险操作·预检（只读）：body `{scope}`（`chat`/`full`）→ 影响面行数 + 将删/将留表 + 逐字短语 + 60s 一次性令牌（绑定档位与发起 IP） |
+| `POST /api/admin/purge` | 危险操作·执行：body `{scope, token, confirm, secret}` → `200 {scope, deleted}`（各表实际删除行数） |
 
 注：管理端不再提供 `GET /api/admin/messages`（消息查看由公开 `GET /api/messages` 承担，软删标记同样透出）。
+
+注（危险操作）：清空数据为两阶段接口——预检（只读，下发限时令牌）与执行。执行侧校验链条：管理员会话 → 限流（`PURGE_RATE_PER_MIN=5`，预检与执行共用桶）→ 档位白名单 → 逐字确认短语 → 二次口令（重输 `ADMIN_SECRET`）→ 一次性令牌（HMAC 签名 + 60s + 绑定档位/IP + nonce 单次记账）→ 事务内按档位清空。`chat` 档只清 `messages`+`events`（保留封禁/在线/限流），`full` 档清五张表；执行写一条审计日志（`[audit] purge …`，不含消息内容与口令）。
 
 Cookie 安全：`HttpOnly; SameSite=Lax; Secure`（生产）；`ADMIN_SECRET` 在 `NODE_ENV=production` 且未设置时于启动阶段抛错拒绝（仅校验缺失、无长度下限，属启动错误而非 HTTP 响应码）。
 
@@ -217,6 +221,7 @@ Cookie 安全：`HttpOnly; SameSite=Lax; Secure`（生产）；`ADMIN_SECRET` �
 - **存储安全**：纯文本不存 HTML；XSS 为前端渲染责任（契约中明示）。
 - **审计与隐私**：`deleted_by` 仅存固定标识（管理员无账号），不落操作者 IP；`bans` 表存 IP 属功能必需，README 提示合规。
 - **仓库**：无任何密钥；`.env.example` 为唯一模板。
+- **危险操作（清空数据）**：不可撤销，因此强制多重校验（会话 + 限流 + 档位白名单 + 逐字短语 + 二次口令 + 一次性令牌，见 §5.2），且审计只写函数日志、不落库（避免销毁数据后残留操作痕迹）；管理页另加 3 秒按钮延迟与浏览器原生二次确认。
 
 ### 6.1 来源白名单（Origin allowlist）
 

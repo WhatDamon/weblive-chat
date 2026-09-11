@@ -139,7 +139,9 @@ export class ChatClient {
     });
     if (!res.ok || !res.body) {
       const body = await res.json().catch(() => null);
-      const err = new Error(body?.error?.message ?? `stream HTTP ${res.status}`);
+      const err = new Error(
+        body?.error?.message ?? `stream HTTP ${res.status}`,
+      );
       err.code = body?.error?.code;
       err.retryAfterMs = body?.error?.retry_after_ms;
       throw err;

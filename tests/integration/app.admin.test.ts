@@ -146,3 +146,213 @@ describe("admin API", () => {
     expect(stats.history.mode).toBe("full");
   });
 });
+
+describe("危险操作：清空数据（多重校验）", () => {
+  const PURGE_RATE = {
+    msgPerMin: 10,
+    streamPerMin: 20,
+    loginPerMin: 5,
+    purgePerMin: 10,
+    windowMs: 60_000,
+  };
+  const IP = "1.1.1.1";
+  const bootPurge = (extra: any = {}) => boot({ rate: PURGE_RATE, ...extra });
+  const login = async (app: any) => {
+    const res = await app.request("/api/admin/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ secret: "test-secret" }),
+    });
+    return (res.headers.get("set-cookie") ?? "").split(";")[0];
+  };
+  const hdr = (cookie: string, ip = IP) => ({
+    cookie,
+    "content-type": "application/json",
+    "x-forwarded-for": ip,
+  });
+  const preview = (app: any, cookie: string, scope: string) =>
+    app.request("/api/admin/purge/preview", {
+      method: "POST",
+      headers: hdr(cookie),
+      body: JSON.stringify({ scope }),
+    });
+  const commit = (app: any, cookie: string, body: unknown, ip = IP) =>
+    app.request("/api/admin/purge", {
+      method: "POST",
+      headers: hdr(cookie, ip),
+      body: JSON.stringify(body),
+    });
+  const seedMsg = (app: any, text = "seed") =>
+    app.request("/api/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ client_id: UUID, nick: "n", text }),
+    });
+  const listBans = async (app: any, cookie: string) =>
+    (await (await app.request("/api/admin/bans", { headers: { cookie } })).json())
+      .bans;
+
+  test("预检：未登录 401；scope 非法 400；合法则返回影响面 / 短语 / 令牌", async () => {
+    const { app } = await bootPurge();
+    let res = await app.request("/api/admin/purge/preview", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ scope: "chat" }),
+    });
+    expect(res.status).toBe(401);
+    const cookie = await login(app);
+    res = await preview(app, cookie, "all");
+    expect(res.status).toBe(400);
+    expect((await res.json()).error.code).toBe("invalid_body");
+    await seedMsg(app);
+    res = await preview(app, cookie, "chat");
+    expect(res.status).toBe(200);
+    const p = await res.json();
+    expect(p).toMatchObject({
+      scope: "chat",
+      confirm_phrase: "清空聊天记录",
+      will_delete: ["messages", "events"],
+    });
+    expect(p.counts.messages).toBe(1);
+    expect(p.counts.events).toBe(1);
+    expect(typeof p.token).toBe("string");
+    expect(p.expires_at).toBeGreaterThan(Date.now());
+  });
+
+  test("执行：缺口令 / 错口令 → 401；短语不符 → 400 invalid_confirm", async () => {
+    const { app } = await bootPurge();
+    const cookie = await login(app);
+    await seedMsg(app);
+    const p = await (await preview(app, cookie, "chat")).json();
+    // 缺口令
+    let res = await commit(app, cookie, {
+      scope: "chat",
+      token: p.token,
+      confirm: p.confirm_phrase,
+    });
+    expect(res.status).toBe(401);
+    expect((await res.json()).error.code).toBe("invalid_secret");
+    // 错口令
+    res = await commit(app, cookie, {
+      scope: "chat",
+      token: p.token,
+      confirm: p.confirm_phrase,
+      secret: "nope",
+    });
+    expect(res.status).toBe(401);
+    expect((await res.json()).error.code).toBe("invalid_secret");
+    // 口令对但短语不对（少字）
+    res = await commit(app, cookie, {
+      scope: "chat",
+      token: p.token,
+      confirm: "清空聊天",
+      secret: "test-secret",
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error.code).toBe("invalid_confirm");
+    // 以上失败均未删数据
+    expect((await (await app.request("/api/messages?limit=5")).json()).messages).toHaveLength(1);
+  });
+
+  test("令牌：篡改 / 换 IP / 二次使用均拒；正确链路 200 并真正清空", async () => {
+    const { app } = await bootPurge();
+    const cookie = await login(app);
+    await seedMsg(app);
+    const p = await (await preview(app, cookie, "chat")).json();
+    // 篡改签名
+    let res = await commit(app, cookie, {
+      scope: "chat",
+      token: `${p.token}x`,
+      confirm: p.confirm_phrase,
+      secret: "test-secret",
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error.code).toBe("invalid_token");
+    // 换 IP 复用同一令牌（令牌绑定发起 IP）
+    res = await commit(
+      app,
+      cookie,
+      { scope: "chat", token: p.token, confirm: p.confirm_phrase, secret: "test-secret" },
+      "2.2.2.2",
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json()).error.code).toBe("invalid_token");
+    // 正确链路
+    res = await commit(app, cookie, {
+      scope: "chat",
+      token: p.token,
+      confirm: p.confirm_phrase,
+      secret: "test-secret",
+    });
+    expect(res.status).toBe(200);
+    const ok = await res.json();
+    expect(ok.scope).toBe("chat");
+    expect(ok.deleted.messages).toBe(1);
+    expect(ok.deleted.events).toBe(1);
+    expect((await (await app.request("/api/messages?limit=5")).json()).messages).toHaveLength(0);
+    // 同一令牌二次使用 → 一次性，被拒
+    res = await commit(app, cookie, {
+      scope: "chat",
+      token: p.token,
+      confirm: p.confirm_phrase,
+      secret: "test-secret",
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error.code).toBe("invalid_token");
+  });
+
+  test("效果：chat 档保留封禁名单，full 档连封禁一起清", async () => {
+    const { app } = await bootPurge();
+    const cookie = await login(app);
+    await seedMsg(app);
+    await app.request("/api/admin/bans", {
+      method: "POST",
+      headers: hdr(cookie),
+      body: JSON.stringify({ ip: "6.6.6.6", reason: "保留验证" }),
+    });
+    expect(await listBans(app, cookie)).toHaveLength(1);
+
+    const p1 = await (await preview(app, cookie, "chat")).json();
+    expect(p1.counts.bans).toBe(1);
+    expect(p1.will_delete).toEqual(["messages", "events"]);
+    const r1 = await commit(app, cookie, {
+      scope: "chat",
+      token: p1.token,
+      confirm: p1.confirm_phrase,
+      secret: "test-secret",
+    });
+    expect(r1.status).toBe(200);
+    expect((await r1.json()).deleted.bans).toBe(0);
+    expect((await (await app.request("/api/messages?limit=5")).json()).messages).toHaveLength(0);
+    expect(await listBans(app, cookie)).toHaveLength(1); // 封禁仍在
+
+    const p2 = await (await preview(app, cookie, "full")).json();
+    expect(p2.confirm_phrase).toBe("清空全部数据");
+    expect(p2.will_delete).toEqual([
+      "messages",
+      "events",
+      "presence",
+      "rate_limits",
+      "bans",
+    ]);
+    const r2 = await commit(app, cookie, {
+      scope: "full",
+      token: p2.token,
+      confirm: p2.confirm_phrase,
+      secret: "test-secret",
+    });
+    expect(r2.status).toBe(200);
+    expect((await r2.json()).deleted.bans).toBe(1);
+    expect(await listBans(app, cookie)).toHaveLength(0);
+  });
+
+  test("限流：预检与执行共用同一桶，超限 429", async () => {
+    const { app } = await bootPurge({ rate: { ...PURGE_RATE, purgePerMin: 2 } });
+    const cookie = await login(app);
+    expect((await preview(app, cookie, "chat")).status).toBe(200);
+    expect((await preview(app, cookie, "chat")).status).toBe(200);
+    const res = await preview(app, cookie, "chat");
+    expect(res.status).toBe(429);
+    expect((await res.json()).error.code).toBe("rate_limited");
+  });
+});

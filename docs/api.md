@@ -71,9 +71,30 @@
 | `DELETE /api/admin/bans/:ip` | 解封 → `204`；不存在 → `404 not_found` |
 | `DELETE /api/admin/messages/:id` | **软删**（占位保留、内容清空、`deleted_by='admin'`，不存操作者 IP）并广播 `delete` 事件 → `204`；不存在 → `404 not_found` |
 | `GET /api/admin/stats` | `{online, messages_total, messages_retained, history:{mode, retention_days, estimate_bytes}}` —— `messages_total`/`messages_retained` 同为**物理行数**（含软删占位）；`estimate_bytes = retained × 400`；读取触发一次维护评估（刷新档位/清理） |
+| `POST /api/admin/purge/preview` | 危险操作·预检（**只读**）：body `{scope}`（`chat`/`full`）→ `200 {scope, scope_desc, will_delete, keep, counts, confirm_phrase, token, expires_at}`；非法 scope → `400 invalid_body` |
+| `POST /api/admin/purge` | 危险操作·执行：body `{scope, token, confirm, secret}` → `200 {scope, deleted}`；短语不符 → `400 invalid_confirm`；口令错 → `401 invalid_secret`；令牌无效/过期/复用 → `400 invalid_token` |
 
 > 管理端不提供消息列表查询——消息查看走公开 `GET /api/messages`（软删占位同样透出），避免重复契约面。
 > 管理端点与公开端点共用 `/api/*` 的 Origin 白名单中间件；Cookie 的 SameSite=Lax 使管理接口仅同源可用（跨源自建管理前端需显式列入 `ALLOWED_ORIGINS` 并自行处理 credentials）。
+
+### 危险操作：清空数据（两阶段 + 多重校验）
+
+清空不可撤销，故刻意做成两阶段：**预检只读下发令牌，执行才期删除**；任一环不过都触达不到删除。
+
+| 环节 | 校验内容 | 失败响应 |
+|---|---|---|
+| 1 | 管理员会话 Cookie | `401 unauthorized` |
+| 2 | 限流：`purge` 桶（预检与执行共用，默认 5 次/min） | `429 rate_limited` |
+| 3 | 档位白名单（`chat` / `full`，不接受任意表名） | `400 invalid_body` |
+| 4 | 逐字确认短语（服务端下发，仅容忍首尾空白） | `400 invalid_confirm` |
+| 5 | 二次口令：请求体内重输 `ADMIN_SECRET`（会话被盗不足以清库） | `401 invalid_secret` |
+| 6 | 一次性令牌：HMAC 签名 + 60s 有效期 + 绑定档位 + 绑定发起 IP + 单次使用（nonce 记账） | `400 invalid_token` |
+
+- `scope=chat`：删除 `messages` + `events`，**保留** `presence` / `rate_limits` / `bans`（封禁名单不会被顺手清掉）；确认短语 `清空聊天记录`
+- `scope=full`：删除五张表（消息、事件、在线状态、限流计数、封禁名单），等同恢复出厂；确认短语 `清空全部数据`
+- 删除在同一事务内完成（部分失败整体回滚），响应返回各表**实际删除行数**
+- 服务端写一条审计日志到函数日志：`[audit] purge scope=… ip=… deleted=…`（不含消息内容与口令）
+- 清空不影响已连接的 SSE 流：在线客户端仍持有旧消息，**需自行刷新页面**
 
 ## 3. Origin 白名单
 
@@ -97,6 +118,8 @@
 | 400 | `invalid_cursor` | `GET /api/messages` 的 `limit` 与 `DELETE /api/admin/messages/:id` 的 `:id` 非纯数字（游标 id 必须是正整数）；**`before`/`since`/SSE `since` 的非法值不报错**——按缺省处理（历史取最近 50 条、流从 0 续传） |
 | 400 | `nick_empty` / `nick_too_long` / `text_empty` / `text_too_long` | 长度/空值校验 |
 | 400 | `banned_word` | 昵称或内容命中违禁词（归一化子串匹配：忽略全角/空白/标点/零宽字符；不回显命中词） |
+| 400 | `invalid_confirm` | 危险操作确认短语不匹配（需逐字输入服务端下发的短语） |
+| 400 | `invalid_token` | 危险操作预检令牌无效 / 已过期 / 档位或 IP 不符 / 已被使用 |
 | 401 | `invalid_secret` / `unauthorized` | 口令错 / 会话缺失·过期·被篡改 |
 | 403 | `banned` | 该 IP 被禁言（附 `reason`） |
 | 403 | `origin_not_allowed` / `missing_origin` | Origin 不在名单 / `REQUIRE_ORIGIN` 下缺 Origin |

@@ -17,6 +17,8 @@ export const codes = {
   missing_origin: "缺少 Origin 来源",
   unauthorized: "未登录或会话失效",
   invalid_secret: "管理口令错误",
+  invalid_confirm: "确认短语不匹配",
+  invalid_token: "预检令牌无效、已过期或已被使用",
   not_found: "资源不存在",
   db_unavailable: "数据库暂不可用",
 } as const;

@@ -26,6 +26,9 @@
   #panels { display: none; }
   pre.stats { margin: 4px 0; font-size: 13px; white-space: pre-wrap; }
   ul { margin: 6px 0; padding-left: 20px; }
+  .card.danger { border-color: #e2b3ac; background: #fff8f7; }
+  .card.danger h2 { color: #a5281b; }
+  code { background: #f0f1f3; padding: 1px 6px; border-radius: 4px; font-size: 13px; }
 </style>
 </head>
 <body>
@@ -67,6 +70,32 @@
       <h2>最近消息 <span class="muted">（可删除；删除为软删占位，全员实时同步）</span></h2>
       <ul id="msgs"></ul>
       <div class="row"><button id="msgsBtn">刷新消息</button></div>
+    </div>
+
+    <div class="card danger">
+      <h2>⚠ 危险操作：清空数据</h2>
+      <p class="muted">
+        不可撤销，请先确认数据已无用。校验链条：预检（只读，下发 60 秒令牌）→ 逐字确认短语 → 重输管理员口令 → 浏览器二次确认；
+        令牌绑定本机 IP 且仅能使用一次。
+      </p>
+      <div class="row">
+        <label><input type="radio" name="pScope" value="chat" checked> 清空聊天数据（消息 + 事件，保留封禁/在线/限流）</label>
+        <label><input type="radio" name="pScope" value="full"> 清空全部数据（含封禁/在线/限流，等同恢复出厂）</label>
+      </div>
+      <div class="row"><button id="pPreviewBtn">① 预检（只读，不删数据）</button></div>
+      <div id="pRun" style="display:none">
+        <p class="muted" id="pSummary"></p>
+        <p class="muted">请逐字输入确认短语：<code id="pPhrase"></code></p>
+        <div class="row">
+          <input type="text" id="pConfirm" placeholder="确认短语" autocomplete="off">
+          <input type="password" id="pSecret" placeholder="再次输入管理员口令" autocomplete="current-password">
+        </div>
+        <div class="row">
+          <button class="danger" id="pGoBtn" disabled>② 执行清空</button>
+          <span class="muted" id="pGoHint"></span>
+        </div>
+      </div>
+      <p class="muted">清空后已打开的浏览器仍会显示旧消息，需要刷新页面才能看到一致视图。</p>
     </div>
   </div>
 </div>
@@ -192,6 +221,83 @@ $("selfBanBtn").onclick = async () => {
     await api("/api/admin/bans", { method: "POST", body: JSON.stringify({ ip, reason: "管理页操作" }) });
     refreshBans();
   } catch (e) { alertErr(e); }
+};
+
+// ---- 危险操作：清空数据（两阶段 + 多重校验）----
+let purgeToken = null, purgePhrase = "", purgeScope = "chat", purgeReadyAt = 0, purgeTick = null;
+
+const purgeScopeVal = () => document.querySelector('input[name="pScope"]:checked').value;
+
+/** 复位：丢弃令牌与输入（任何失败/换档位/过期都必须重新预检） */
+function purgeReset(hint) {
+  purgeToken = null;
+  purgeReadyAt = 0;
+  if (purgeTick) { clearInterval(purgeTick); purgeTick = null; }
+  $("pRun").style.display = "none";
+  $("pGoBtn").disabled = true;
+  $("pGoHint").textContent = hint || "";
+  $("pConfirm").value = "";
+  $("pSecret").value = "";
+}
+
+for (const r of document.querySelectorAll('input[name="pScope"]')) {
+  r.onchange = () => purgeReset("已切换档位，请重新预检");
+}
+
+$("pPreviewBtn").onclick = async () => {
+  try {
+    const scope = purgeScopeVal();
+    const p = await api("/api/admin/purge/preview", { method: "POST", body: JSON.stringify({ scope }) });
+    purgeToken = p.token;
+    purgePhrase = p.confirm_phrase;
+    purgeScope = p.scope;
+    const c = p.counts;
+    const del = p.will_delete.map((t) => t + " " + c[t]).join("、");
+    const keep = p.keep.map((t) => t + " " + c[t]).join("、");
+    $("pSummary").textContent = "将删除：" + del + "｜将保留：" + (keep || "无");
+    $("pPhrase").textContent = p.confirm_phrase;
+    $("pRun").style.display = "block";
+    // UI 延迟可用：3 秒后才允许点击（防手快误点），同时跟踪令牌有效期
+    purgeReadyAt = Date.now() + 3000;
+    $("pGoBtn").disabled = true;
+    if (purgeTick) clearInterval(purgeTick);
+    purgeTick = setInterval(() => {
+      const exp = Math.ceil((p.expires_at - Date.now()) / 1000);
+      if (exp <= 0) { purgeReset("预检令牌已过期，请重新预检"); return; }
+      if (Date.now() >= purgeReadyAt) {
+        $("pGoBtn").disabled = false;
+        $("pGoHint").textContent = "令牌 " + exp + " 秒后过期";
+        clearInterval(purgeTick);
+        purgeTick = null;
+      } else {
+        $("pGoHint").textContent = "按钮 " + Math.ceil((purgeReadyAt - Date.now()) / 1000) + " 秒后可用";
+      }
+    }, 250);
+  } catch (e) { purgeReset(""); alertErr(e); }
+};
+
+$("pGoBtn").onclick = async () => {
+  if (!purgeToken) { alert("请先预检"); return; }
+  const confirmText = $("pConfirm").value.trim();
+  if (confirmText !== purgePhrase) { alert("确认短语不匹配，请逐字输入：" + purgePhrase); return; }
+  const secret = $("pSecret").value;
+  if (!secret) { alert("请再次输入管理员口令"); return; }
+  const label = purgeScope === "full" ? "全部数据（含封禁/在线/限流）" : "聊天数据（消息 + 事件）";
+  if (!window.confirm("即将清空【" + label + "】。\n\n此操作不可撤销。确定继续？")) return;
+  $("pGoBtn").disabled = true;
+  try {
+    const r = await api("/api/admin/purge", {
+      method: "POST",
+      body: JSON.stringify({ scope: purgeScope, token: purgeToken, confirm: confirmText, secret }),
+    });
+    const detail = Object.keys(r.deleted).map((k) => k + " " + r.deleted[k]).join("、");
+    purgeReset("");
+    refreshAll();
+    alert("已清空。实际删除行数：" + detail);
+  } catch (e) {
+    purgeReset("");
+    alertErr(e);
+  }
 };
 
 (async () => {

@@ -37,7 +37,7 @@ bun run dev                   # http://localhost:3000
 ```
 
 - 聊天室：<http://localhost:3000/demo.html>（实时推送、历史记录、在线人数）
-- 管理后台：<http://localhost:3000/admin>（本地开发未设置 `ADMIN_SECRET` 时使用内置开发口令；生产环境必须显式配置）
+- 管理后台：<http://localhost:3000/admin>（本地开发未设置 `ADMIN_SECRET` 时使用内置开发口令；生产环境必须显式配置）——含运行状态、IP 封禁、消息软删，以及需多重校验的危险操作「清空数据」
 
 常用命令：
 
@@ -77,6 +77,7 @@ bun run dev                   # http://localhost:3000
 | `MSG_RATE_PER_MIN` | `10` | 每 IP 每分钟可发消息数（60s 固定窗口） |
 | `STREAM_RATE_PER_MIN` | `20` | 每 IP 每分钟可开流数 |
 | `LOGIN_RATE_PER_MIN` | `5` | 每 IP 每分钟登录尝试数 |
+| `PURGE_RATE_PER_MIN` | `5` | 每 IP 每分钟危险操作（清空数据）次数：**预检与执行共用同一桶** |
 | `MAINTENANCE_EVERY` | `100` | 每 N 次写入触发一次保留期评估与过期清理 |
 | `DEV_IP` | `127.0.0.1` | 无 `x-forwarded-for` 时的回退 IP（仅本地开发/测试） |
 | `ADMIN_SESSION_DAYS` | `7` | 管理会话 Cookie 有效天数 |

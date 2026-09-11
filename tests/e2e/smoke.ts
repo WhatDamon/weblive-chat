@@ -358,10 +358,7 @@ async function main() {
     cli.stderr!.on("data", (d) => (cliOut += d.toString()));
     const exited = new Promise<void>((r) => cli.on("exit", () => r()));
     // 脚本内部：建流 → 1.5s 后发言 → 经 SSE 收到自己的消息；给 8s 窗口后收尾
-    await Promise.race([
-      exited,
-      new Promise<void>((r) => setTimeout(r, 8000)),
-    ]);
+    await Promise.race([exited, new Promise<void>((r) => setTimeout(r, 8000))]);
     if (cli.exitCode === null) cli.kill("SIGTERM");
     const lines = cliOut.split("\n").filter(Boolean);
     check(

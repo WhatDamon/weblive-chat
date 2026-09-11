@@ -161,6 +161,78 @@ function contract(provider: TestProvider) {
       expect((await repo.messageStats()).total).toBe(0);
       await cleanup();
     });
+    test("危险操作：purgeCounts 行数；clearData(chat) 保留封禁/在线/限流，full 全清", async () => {
+      const { repo, cleanup } = await makeRepo(provider);
+      const now = Date.now();
+      const seed = async () => {
+        for (let i = 0; i < 2; i++)
+          await repo.sendMessageAndEvent({
+            client_id: "c",
+            nick: "n",
+            text: `m${i}`,
+            created_at: now + i,
+          });
+        await repo.presenceUpsert("p", now);
+        await repo.banUpsert("1.2.3.4", "spam", "admin", now);
+        await repo.rateHit("msg", "9.9.9.9", 0);
+      };
+      await seed();
+      expect(await repo.purgeCounts()).toEqual({
+        messages: 2,
+        events: 2,
+        presence: 1,
+        rate_limits: 1,
+        bans: 1,
+      });
+
+      // chat 档：只删消息与事件；封禁名单绝不能被顺手清掉
+      expect(await repo.clearData("chat")).toEqual({
+        messages: 2,
+        events: 2,
+        presence: 0,
+        rate_limits: 0,
+        bans: 0,
+      });
+      expect(await repo.purgeCounts()).toEqual({
+        messages: 0,
+        events: 0,
+        presence: 1,
+        rate_limits: 1,
+        bans: 1,
+      });
+      // 读路径确实清空（含事件游标基准 maxEventId）
+      expect(await repo.historyBefore(PG_SAFE_MAX_ID, 10)).toEqual([]);
+      expect(await repo.eventsSince(0, 10)).toEqual([]);
+      expect(await repo.eventsMaxId()).toBe(0);
+
+      // full 档：五张表全清（重新 seed 后计数仍是各表物理行数）
+      await seed();
+      expect(await repo.clearData("full")).toEqual({
+        messages: 2,
+        events: 2,
+        presence: 1,
+        rate_limits: 1,
+        bans: 1,
+      });
+      expect(await repo.purgeCounts()).toEqual({
+        messages: 0,
+        events: 0,
+        presence: 0,
+        rate_limits: 0,
+        bans: 0,
+      });
+      expect(await repo.messageStats()).toEqual({ total: 0, retained: 0 });
+      expect(await repo.banGet("1.2.3.4")).toBeNull();
+      // 空库上再清一次不是错误，全 0
+      expect(await repo.clearData("full")).toEqual({
+        messages: 0,
+        events: 0,
+        presence: 0,
+        rate_limits: 0,
+        bans: 0,
+      });
+      await cleanup();
+    });
   });
 }
 

@@ -430,10 +430,14 @@ const toISO = (v) => new Date(toMs(v)).toISOString();
 | `DELETE` | `/api/admin/bans/:ip` | 解禁 → `204`；不存在 → `404 not_found` |
 | `GET` | `/api/admin/stats` | `{ online, messages_total, messages_retained, history: { mode, retention_days, estimate_bytes } }` |
 | `DELETE` | `/api/admin/messages/:id` | 软删消息 → `204`（会广播 `delete` 事件；`messages.id`） |
+| `POST` | `/api/admin/purge/preview` | 危险操作·预检（只读）：体 `{scope}`（`chat`/`full`）→ `{scope, scope_desc, will_delete, keep, counts, confirm_phrase, token, expires_at}` |
+| `POST` | `/api/admin/purge` | 危险操作·执行：体 `{scope, token, confirm, secret}` → `{scope, deleted}`（各表实际删除行数） |
 
 注意：
 
 - 登录失败一律 `401 invalid_secret`（**不区分**「口令错」与「无此账号」）；错误口令也计入登录限流。
+- **清空数据是两阶段 + 多重校验的危险操作**：先 `preview`（只读，下发 60 秒一次性令牌与逐字确认短语），再 `purge` 提交「令牌 + 短语 + 重输的 `ADMIN_SECRET`」。令牌绑定档位与发起 IP、只能使用一次；`chat` 档只清消息与事件（**封禁名单会保留**），`full` 档清五张表。预检与执行共用一个限流桶（默认 5 次/分钟）。
+- 清空**不影响已连接的 SSE 流**：在线客户端仍显示旧消息，需自行刷新页面才能看到一致视图。
 - 软删是**占位删除**：消息行仍在（`text: null`, `deleted: true`），历史接口与 SSE 都会告知；
   客户端的实时列表要处理「消息先到达、后被删除」的乱序情况（按 id 就地替换成占位）。
 - `stats` 读取会顺带触发一次保留期评估，所以它的 `mode` 是**最新档位**。

@@ -6,6 +6,8 @@ export interface RateCfg {
   msgPerMin: number;
   streamPerMin: number;
   loginPerMin: number;
+  /** 危险操作（清空数据）预算：预检与执行共用一个桶。 */
+  purgePerMin: number;
   windowMs: number;
 }
 
@@ -130,6 +132,7 @@ export function loadConfig(
       msgPerMin: envInt(env, "MSG_RATE_PER_MIN", 10),
       streamPerMin: envInt(env, "STREAM_RATE_PER_MIN", 20),
       loginPerMin: envInt(env, "LOGIN_RATE_PER_MIN", 5),
+      purgePerMin: envInt(env, "PURGE_RATE_PER_MIN", 5),
       windowMs: rateWindowMs,
     },
     allowedOrigins,
