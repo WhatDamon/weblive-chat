@@ -466,21 +466,39 @@ const { bans } = await (await fetch("/api/admin/bans?limit=100", { credentials: 
 
 ### 9.1 省服务端额度：不可见就断开（强烈建议）
 
-Vercel Hobby 档函数固定 **2 GB 内存且不可下调**，免费额度是 **360 GB-hr 内存时长/月**，按**实例存活**计——SSE 常连期间实例不会释放。折算下来只有 **180 实例小时**，而一个 7×24 常显的标签页是 720 小时/月，**单独一个就超 3 倍**。后台标签页占“常连页”的绝大多数，所以最划算的一步是：**页面不可见时主动断开，可见时重连并用历史接口补齐缺口**。内置 `/demo.html` 已这么做，接入方建议照搬：
+Vercel Hobby 档函数固定 **2 GB 内存且不可下调**，免费额度是 **360 GB-hr 内存时长/月**，按**实例存活且有在途请求**计（计到最后一个在途请求结束，空闲冻结不计费）——所以**一条 SSE 常连 = 实例持续计费**。折算下来只有 **180 实例小时/月**，而一个 7×24 常显标签页是 720 小时/月，**是该额度的 4 倍**。先撞墙的是内存而不是 CPU（见 README「Hobby 免费额度能撑多久」），所以最划算的两步都在浏览器端：
+
+1. **不可见就不连**（后台标签页）
+2. **可见但没人动也不连**（忘记关的标签页：无鼠标/键盘/滚动 5 分钟后转低频轮询）
+
+内置 `/demo.html` 已经这么做，接入方建议照搬：
 
 ```js
-let ctrl = null;
+let ctrl = null, idle = false, lastActive = Date.now();
 let paused = document.visibilityState === "hidden"; // 以隐藏状态打开就不建流
+const IDLE_MS = 300_000, POLL_MS = 30_000;
 
 document.addEventListener("visibilitychange", () => {
   paused = document.visibilityState === "hidden";
+  lastActive = Date.now();
   if (paused) ctrl?.abort();                      // 释放连接 = 释放实例
   else backfill();                                // 回来先把缺口补上，再重连
 });
+for (const ev of ["mousemove", "mousedown", "keydown", "wheel", "scroll", "touchstart"]) {
+  document.addEventListener(ev, () => { lastActive = Date.now(); idle = false; }, { passive: true });
+}
+setInterval(() => {                               // 可见但长时间无操作 → 降级
+  if (paused || idle || Date.now() - lastActive < IDLE_MS) return;
+  idle = true;
+  ctrl?.abort();                                  // 停止常连计费
+}, 1000);
 
 async function connect() {
+  let wasIdle = false;
   while (true) {
     if (paused) { await sleep(1000); continue; }
+    if (idle) { wasIdle = true; await sleep(POLL_MS); if (!paused && idle) await backfill(); continue; }
+    if (wasIdle) { wasIdle = false; await backfill(); }  // 轮询期间的空缺，重连前补上
     ctrl = new AbortController();
     const res = await fetch(`/api/stream?since=${since}&client_id=${cid}`, { signal: ctrl.signal });
     // ...读事件循环...
@@ -488,11 +506,16 @@ async function connect() {
 }
 ```
 
-补缺口时注意：历史接口会把「已删除」的消息以 `deleted:true, text:null` 返回，几已渲染过的条目要就地替换成删除占位（内置页的 `loadHistory(true)` 就是这么做的）。
+要点与代价：
+
+- **降级期间没有 presence 心跳**：静默 45s（TTL）后会从在线人数里消失，一操作就立刻回到在线——这是「离开」的合理语义，不是 bug。
+- **降级期间没有 `delete` / `notice` 实时事件**，全靠回到常连前的那次 `backfill()` 补齐（所以它必须先跑，再重连）。
+- 阈值可覆盖：页面若存在 `window.WL = { idleMs, pollMs }` 则用它（内置页默认 5 分钟 / 30s）。
+- 补缺口时注意：历史接口会把「已删除」的消息以 `deleted:true, text:null` 返回，凡已渲染过的条目要就地替换成删除占位（内置页的 `loadHistory(true)` 就是这么做的）。
 
 还有两档更省的做法：
 
-- **低频轮询（推荐给“几十人同时在线”的规模）**：不建流，每 30s 拉一次 `/api/messages?since=<本地最新 messages.id>`（成本约 0.03 GB-hr/小时，常连是 2 GB-hr/小时，差约两个数量级）。代价是没有 presence/`delete`/`notice` 实时事件，需自行轮询补齐。
+- **纯轮询（推荐给“几十人同时在线”的规模）**：完全不建流，每 30s 拉一次 `/api/messages?since=<本地最新 messages.id>`（成本约 0.03–0.1 GB-hr/小时，常连是 2 GB-hr/小时，省 20–60 倍）。代价是没有 presence/`delete`/`notice` 实时事件，需自行轮询补齐。
 - **别把示例客户端常驻**：`examples/client.mjs` 是终端进程、没有“可见性”概念，挂着就是 2 GB-hr/小时。
 
 ---

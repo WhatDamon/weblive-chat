@@ -61,7 +61,10 @@ function createDom() {
     document.visibilityState = state;
     for (const fn of listeners.visibilitychange ?? []) fn();
   };
-  return { document, byId, setVisibility };
+  const fire = (type: string) => {
+    for (const fn of listeners[type] ?? []) fn();
+  };
+  return { document, byId, setVisibility, fire };
 }
 
 const tick = (ms = 20) => new Promise((r) => setTimeout(r, ms));
@@ -74,7 +77,7 @@ async function until(cond: () => boolean, ms = 1000) {
   return cond();
 }
 
-async function bootDemo() {
+async function bootDemo(wl?: { idleMs: number; pollMs: number }) {
   const h = await makeApp();
   cleanups.push(h.cleanup);
   const { app } = h;
@@ -124,7 +127,7 @@ async function bootDemo() {
   const dom = createDom();
   new Function("document", "window", "fetch", code)(
     dom.document,
-    {},
+    { WL: wl },
     fetchShim,
   );
 
@@ -158,5 +161,22 @@ describe("聊天页·页面可见性联动（服务器成本）", () => {
     expect(d.stats().streamOpens).toBe(0);
     d.dom.setVisibility("visible");
     expect(await until(() => d.stats().streamOpens === 1)).toBe(true);
+  });
+
+  test("可见但久无操作：断开流转为低频轮询，再操作后重连", async () => {
+    // Short thresholds so the test does not wait minutes.
+    const d = await bootDemo({ idleMs: 300, pollMs: 150 });
+    expect(await until(() => d.stats().streamOpens === 1)).toBe(true);
+    // The watchdog checks once a second, so idle needs up to idleMs + 1s to be noticed.
+    expect(await until(() => d.stats().streamAborts === 1, 2500)).toBe(true);
+    const afterIdle = d.stats().messageFetches;
+    // Polls are slow and no stream may be reopened while idle.
+    expect(await until(() => d.stats().messageFetches > afterIdle, 1500)).toBe(
+      true,
+    );
+    expect(d.stats().streamOpens).toBe(1);
+
+    d.dom.fire("mousemove");
+    expect(await until(() => d.stats().streamOpens === 2, 2000)).toBe(true);
   });
 });

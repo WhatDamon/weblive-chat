@@ -233,8 +233,8 @@ describe("runStream", () => {
     });
     await sleep(80);
     ctrl.stop();
-    expect(out.some((o) => o[0] === "message" && (o[1] as any).id === "1")).toBe(
-      true,
-    );
+    expect(
+      out.some((o) => o[0] === "message" && (o[1] as any).id === "1"),
+    ).toBe(true);
   });
 });

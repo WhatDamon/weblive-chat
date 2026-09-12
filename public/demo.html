@@ -79,6 +79,10 @@ const listEl = $("messages");
 const seen = new Map();          // id -> li (ids are strings)
 let ctrl = null;                 // active stream handle, aborted when the page hides
 let paused = document.visibilityState === "hidden"; // a hidden page holds no stream
+let idle = false;                // visible but untouched: no stream, slow polling instead
+let lastActive = Date.now();
+const WL = window.WL || {};
+const IDLE_MS = WL.idleMs || 300000, POLL_MS = WL.pollMs || 30000;
 // seen dedupes all ids; `since` is only the resume bound, advanced for numeric ids.
 
 const NOTE = "placeholder"; // empty-state marker
@@ -188,8 +192,11 @@ async function send() {
 
 let since = 0;
 async function connect() {
+  let wasIdle = false;
   while (true) {
     if (paused) { await sleep(1000); continue; } // wait here until the page is visible again
+    if (idle) { wasIdle = true; await sleep(POLL_MS); if (!paused && idle) await loadHistory(true); continue; }
+    if (wasIdle) { wasIdle = false; await loadHistory(true); } // catch up on the polled window
     setStatus(COPY.chat.statusConnecting);
     ctrl = new AbortController();
     try {
@@ -216,7 +223,7 @@ async function connect() {
       }
     } catch {}
     ctrl = null;
-    if (paused) continue; // aborted because the page hid: no reconnect status needed
+    if (paused || idle) continue; // aborted on purpose (hidden or idle): no reconnect status
     setStatus(COPY.chat.statusReconnecting, "bad");
     await sleep(1000);
   }
@@ -256,13 +263,23 @@ function bumpSince(id) {
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
-// Releasing the stream while hidden is the biggest server-cost saver; the resume path re-syncs
-// history so nothing is missed.
+// A live stream bills server instance time, so drop it whenever the page is hidden or untouched;
+// both resume paths re-sync history so nothing is missed.
 document.addEventListener("visibilitychange", () => {
   paused = document.visibilityState === "hidden";
+  lastActive = Date.now();
   if (paused) { ctrl?.abort(); setStatus(COPY.chat.statusPaused); }
   else { loadHistory(true); setStatus(COPY.chat.statusConnecting); }
 });
+for (const ev of ["mousemove", "mousedown", "keydown", "wheel", "scroll", "touchstart"]) {
+  document.addEventListener(ev, () => { lastActive = Date.now(); idle = false; }, { passive: true });
+}
+setInterval(() => {
+  if (paused || idle || Date.now() - lastActive < IDLE_MS) return;
+  idle = true;
+  ctrl?.abort();
+  setStatus(COPY.chat.statusIdle);
+}, 1000);
 
 $("send").onclick = send;
 $("text").addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });

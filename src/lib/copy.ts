@@ -148,6 +148,7 @@ export const COPY = {
     statusConnected: "已连接",
     statusReconnecting: "重连中…",
     statusPaused: "已暂停（页面不可见）",
+    statusIdle: "省流量待机（长时间无操作）",
     statusConnectFailed: "连接失败：{msg}",
     statusBanned: "已被禁言",
     statusOriginDenied: "当前域名不可用",
