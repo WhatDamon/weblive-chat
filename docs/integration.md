@@ -398,7 +398,7 @@ const toISO = (v) => new Date(toMs(v)).toISOString();
 | 部署配置 | 行为 |
 |---|---|
 | 未设 `ALLOWED_ORIGINS`（默认） | 开放：响应 `access-control-allow-origin: *`，任何站点可调用 |
-| 设了 `ALLOWED_ORIGINS` | 白名单 fail-closed：命中则回显该 Origin 并加 `Vary: Origin`；未命中 → `403 origin_not_allowed` |
+| 设了 `ALLOWED_ORIGINS` | 白名单 fail-closed：命中则回显该 Origin 并加 `Vary: Origin`；未命中 → `403 origin_not_allowed`（响应体附 `origin` 与 `allowed_origins_count`）；写 `*` 等价于留空（全开） |
 | `REQUIRE_ORIGIN=1` | 连无 Origin 的直连（curl / 服务端对服务端）也拒绝 → `403 missing_origin` |
 
 预检：`OPTIONS /api/*` 返回 `204`，允许 `GET,POST,DELETE,OPTIONS`，允许头 `content-type`，`Max-Age: 86400`。
@@ -474,8 +474,9 @@ const { bans } = await (await fetch("/api/admin/bans?limit=100", { credentials: 
 | 断线一段时间后消息丢了 | 只用了 SSE，没有补历史；`events` 表 1h 后清理 | 重连前先 `GET /api/messages?since=<最后消息 id>` |
 | 在线人数偏高/偏低 | 没带 `client_id`（每连接算一人）；或 `client_id` 没持久化 | 用 localStorage 持久化并随流带上（另注意 45s 无心跳即掉线） |
 | 人数久久不变 | presence 只在**人数变化**时广播，且每 5s 统计一次 | 属正常，最长约 5s 才反映变化 |
-| 一直 `403 origin_not_allowed` | `ALLOWED_ORIGINS` 未含当前页面域名 | 把前端域名加进白名单（含 `https://`，不要带路径/末尾斜杠） |
-| 直连脚本 `403 missing_origin` | 部署开了 `REQUIRE_ORIGIN=1` | 脚本显式带 `Origin` 头，或关掉该开关 |
+| 一直 `403 origin_not_allowed` | `ALLOWED_ORIGINS` 未含当前页面域名（**换域名后忘了同步是最常见原因**） | 用 403 响应体里的 `error.origin` 确认被拒来源，把它加进白名单（含 `https://`，不要带路径/末尾斜杠）；改完**需重新部署**才生效 |
+| 直连脚本 `403 missing_origin` | 部署开了 `REQUIRE_ORIGIN=1` | 脚本显式带 `Origin` 头，或把 `REQUIRE_ORIGIN` 置 `0` / 删除该变量 |
+| 不确定闸口是否锁住 | — | `curl /api/meta` 看 `origin_mode`：`open` = 未配白名单，`locked` = 已配 |
 | `400 banned_word` | 昵称或内容命中违禁词（含插空/全角变体） | 提示「内容含违禁词」；词库白名单见 `data/banned/README.md` |
 | `429` | 触发限流（按 IP） | 按 `retry_after_ms` 退避，前端加本地节流 |
 | 历史接口返回空但能聊天 | 存储超限自动降级（`mode: "ephemeral"`） | 正常降级行为，UI 提示「历史暂不可用」；运营侧看 `/api/admin/stats` |

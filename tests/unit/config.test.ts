@@ -47,6 +47,18 @@ describe("loadConfig", () => {
     expect(cfg.allowedOrigins).toEqual(["https://a.com", "https://b.com"]);
   });
 
+  test("ALLOWED_ORIGINS=* 等价于全开（避免写成 * 反而锁死全部来源）", () => {
+    expect(loadConfig({ ...base, ALLOWED_ORIGINS: "*" }).allowedOrigins).toEqual(
+      [],
+    );
+    expect(
+      loadConfig({ ...base, ALLOWED_ORIGINS: "https://a.com,*" }).allowedOrigins,
+    ).toEqual([]);
+    expect(
+      loadConfig({ ...base, ALLOWED_ORIGINS: "  " }).allowedOrigins,
+    ).toEqual([]);
+  });
+
   test("DB_PROVIDER=memory：无需 DATABASE_URL，供本地/单实例纯内存演示", () => {
     const cfg = loadConfig({ ...base, DB_PROVIDER: "memory" });
     expect(cfg.dbProvider).toBe("memory");

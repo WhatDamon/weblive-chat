@@ -28,7 +28,13 @@ export function jsonError(
   c: Context,
   status: ContentfulStatusCode,
   code: ErrCode,
-  extra?: { message?: string; retry_after_ms?: number; reason?: string },
+  extra?: {
+    message?: string;
+    retry_after_ms?: number;
+    reason?: string;
+    origin?: string;
+    allowed_origins_count?: number;
+  },
 ) {
   return c.json(
     {
@@ -39,6 +45,11 @@ export function jsonError(
           ? { retry_after_ms: extra.retry_after_ms }
           : {}),
         ...(extra?.reason !== undefined ? { reason: extra.reason } : {}),
+        // Origin 闸口诊断：回显实际收到的来源与已配置数量，否则「来源不被允许」无法定位是哪个域名被拒
+        ...(extra?.origin !== undefined ? { origin: extra.origin } : {}),
+        ...(extra?.allowed_origins_count !== undefined
+          ? { allowed_origins_count: extra.allowed_origins_count }
+          : {}),
       },
     },
     status,

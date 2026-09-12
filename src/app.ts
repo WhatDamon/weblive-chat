@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { AppConfig } from "./lib/config";
 import type { Repo } from "./lib/repo";
-import { classifyOrigin } from "./lib/security";
+import { classifyOrigin, normalizeOrigin } from "./lib/security";
 import { jsonError } from "./lib/http";
 import { registerChat } from "./routes/chat";
 import { registerAdmin } from "./routes/admin";
@@ -80,7 +80,11 @@ export function createApp(deps: AppDeps): Hono {
       c.header("access-control-allow-origin", cls.origin);
       c.header("vary", "Origin");
     } else if (cls.mode === "denied") {
-      return jsonError(c, 403, cls.code);
+      // 带上实际来源与已配置数量：换域名后忘了同步 ALLOWED_ORIGINS 时能直接定位
+      return jsonError(c, 403, cls.code, {
+        ...(origin ? { origin: normalizeOrigin(origin).slice(0, 256) } : {}),
+        allowed_origins_count: cfg.allowedOrigins.length,
+      });
     }
     if (c.req.method === "OPTIONS") {
       c.header("access-control-allow-methods", "GET,POST,DELETE,OPTIONS");

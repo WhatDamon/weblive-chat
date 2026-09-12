@@ -187,6 +187,24 @@ describe("chat 公开端点", () => {
     expect(none.status).toBe(200);
   });
 
+  test("Origin 闸口可诊断：403 回显收到的 Origin、/api/meta 报 open|locked", async () => {
+    const locked = await boot({ allowedOrigins: ["https://a.com"] });
+    const bad = await locked.app.request("/api/meta", {
+      headers: { origin: "https://EVIL.com/" },
+    });
+    expect(bad.status).toBe(403);
+    const body = await bad.json();
+    expect(body.error.code).toBe("origin_not_allowed");
+    // 回显归一化后的实际来源：排查「为什么被拒」时不必再猜是哪个域名/哪个变量
+    expect(body.error.origin).toBe("https://evil.com");
+    expect(body.error.allowed_origins_count).toBe(1);
+
+    const lockedMeta = await (await locked.app.request("/api/meta")).json();
+    expect(lockedMeta.origin_mode).toBe("locked");
+    const openMeta = await (await (await boot()).app.request("/api/meta")).json();
+    expect(openMeta.origin_mode).toBe("open");
+  });
+
   test("维护触发：接近 maxRows 广播 notice；到顶 → ephemeral 停写历史", async () => {
     const { app, repo } = await boot({ maxRows: 4, maintenanceEvery: 1 });
     const send = () =>

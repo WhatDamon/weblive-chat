@@ -63,7 +63,7 @@ bun run dev                   # http://localhost:3000
 | `DB_MIGRATE_ON_BOOT` | `true` | 启动幂等建表（`CREATE TABLE IF NOT EXISTS`）；`"false"` 关闭 |
 | `ADMIN_SECRET` | 仅本地开发有内置回退值 | 管理后台口令；**生产（`NODE_ENV=production`）缺失即拒绝启动**，请设为长随机串 |
 | `NODE_ENV` | `development` | Vercel 自动设为 `production` |
-| `ALLOWED_ORIGINS` | 空（开放） | 逗号分隔精确 Origin，如 `https://a.com,http://localhost:3000`；一旦设置即白名单 fail-closed。⚠️ **设置时须把部署自身域名一并列入**（同源 `/demo.html`、`/admin` 页与同源前端，浏览器对 POST 必带 Origin），否则内置页面/同源应用的写请求会被 403 拒 |
+| `ALLOWED_ORIGINS` | 空（开放） | 逗号分隔精确 Origin，如 `https://a.com,http://localhost:3000`；一旦设置即白名单 fail-closed。写 `*` 等价于留空（全开），不会被当成字面量来源。⚠️ **设置时须把部署自身域名一并列入**（同源 `/demo.html`、`/admin` 页与同源前端，浏览器对 POST 必带 Origin），否则内置页面/同源应用的写请求会被 403 拒；**换域名后必须同步更新此变量**（改完需重新部署才生效） |
 | `REQUIRE_ORIGIN` | `0` | `1` 时无 Origin 的直连（curl/脚本）也拒绝（`403 missing_origin`） |
 | `NICK_MAX` | `24` | 昵称最大字符数 |
 | `TEXT_MAX` | `1000` | 消息内容最大字符数 |
@@ -108,7 +108,11 @@ bun run dev                   # http://localhost:3000
 
 > ⚠️ **Vercel 函数文件系统是临时的**：`file:` 型 SQLite 只能用于本地，**禁止作为 Vercel 生产存储**（数据会随实例回收丢失）。生产 SQLite 必须走远程 Turso。
 >
-> ⚠️ **Origin 白名单会锁住内置页面**：一旦设置 `ALLOWED_ORIGINS`，浏览器端写请求（POST/DELETE）会带当前页 Origin——**必须把部署自身域名一并列入**（例如 `https://你的项目.vercel.app`），否则内置 `/demo.html` 的发言与 `/admin` 的封禁/删除都会被 `403 origin_not_allowed` 拒绝（GET 历史/SSE 流不受影响）。
+> ⚠️ **Origin 白名单会锁住内置页面**：一旦设置 `ALLOWED_ORIGINS`，浏览器端写请求（POST/DELETE）会带当前页 Origin——**必须把部署自身域名一并列入**（例如 `https://你的域名`），否则内置 `/demo.html` 的发言与 `/admin` 的封禁/删除都会被 `403 origin_not_allowed` 拒绝（GET 历史/SSE 流不受影响）。
+>
+> **换域名后务必同步 `ALLOWED_ORIGINS` 并重新部署**（环境变量变更不会自动应用到已有部署）。排查手段：`curl /api/meta` 看 `origin_mode`（`open`/`locked`）；被拒时 403 响应体会回显 `error.origin`（被拒来源）与 `error.allowed_origins_count`（已配置数量），后台页也会直接提示应加入哪个域名。
+>
+> 注意 `REQUIRE_ORIGIN` 只影响「请求不带 Origin」这一种情况（例如同源 GET、curl），与「来源不在白名单」是两条独立规则：把 `REQUIRE_ORIGIN` 置 0 **不能**解决 `origin_not_allowed`。
 
 换 provider = 改 `DB_PROVIDER` + `DATABASE_URL` 两个值（schema 为跨方言子集，启动自动建表），**无需改代码或跑迁移**。
 

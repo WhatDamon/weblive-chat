@@ -60,16 +60,23 @@ function createDom() {
 
 const tick = (ms = 60) => new Promise((r) => setTimeout(r, ms));
 
-async function bootPage(over: any = {}) {
+async function bootPage(
+  over: any = {},
+  opts: { origin?: string; location?: string } = {},
+) {
   const h = await makeApp(over);
   cleanups.push(h.cleanup);
   const { app } = h;
 
   // Cookie jar：页面依赖浏览器自动携带 wl_admin
   let cookie = "";
-  const fetchShim = async (path: string, opts: any = {}) => {
-    const headers = { ...(opts.headers ?? {}), ...(cookie ? { cookie } : {}) };
-    const res = await app.request(path, { ...opts, headers });
+  const fetchShim = async (path: string, opts2: any = {}) => {
+    const headers = {
+      ...(opts2.headers ?? {}),
+      ...(cookie ? { cookie } : {}),
+      ...(opts.origin ? { origin: opts.origin } : {}),
+    };
+    const res = await app.request(path, { ...opts2, headers });
     const sc = res.headers.get("set-cookie");
     if (sc) cookie = sc.split(";")[0];
     return res;
@@ -90,10 +97,15 @@ async function bootPage(over: any = {}) {
   );
   const code = /<script>([\s\S]*?)<\/script>/.exec(html)![1];
   const dom = createDom();
-  // 页面脚本按浏览器全局环境执行：document/window/fetch/alert 由 shim 提供
+  // 页面脚本按浏览器全局环境执行：document/window/location/fetch/alert 由 shim 提供
+  const locationShim = {
+    origin: opts.location ?? "http://localhost:3000",
+    href: (opts.location ?? "http://localhost:3000") + "/admin",
+  };
   new Function(
     "document",
     "window",
+    "location",
     "fetch",
     "alert",
     "setInterval",
@@ -102,6 +114,7 @@ async function bootPage(over: any = {}) {
   )(
     dom.document,
     windowShim,
+    locationShim,
     fetchShim,
     (m: string) => alerts.push(String(m)),
     setInterval,
@@ -165,21 +178,27 @@ describe("后台页·清空数据（DOM shim 驱动真实页面逻辑）", () =>
     el("pSecret").value = "test-secret";
     await el("pGoBtn").onclick();
     expect(alerts.at(-1)).toContain("确认短语不匹配");
-    expect((await (await p.app.request("/api/messages?limit=5")).json()).messages).toHaveLength(1);
+    expect(
+      (await (await p.app.request("/api/messages?limit=5")).json()).messages,
+    ).toHaveLength(1);
 
     // ③ 原生二次确认点「取消」：同样不删数据
     el("pConfirm").value = "清空聊天记录";
     p.setConfirm(false);
     await el("pGoBtn").onclick();
     expect(confirms.at(-1)).toContain("不可撤销");
-    expect((await (await p.app.request("/api/messages?limit=5")).json()).messages).toHaveLength(1);
+    expect(
+      (await (await p.app.request("/api/messages?limit=5")).json()).messages,
+    ).toHaveLength(1);
 
     // ④ 确认执行：真正清空，且 UI 复位（令牌作废）
     p.setConfirm(true);
     await el("pGoBtn").onclick();
     expect(alerts.at(-1)).toContain("已清空");
     expect(alerts.at(-1)).toContain("messages 1");
-    expect((await (await p.app.request("/api/messages?limit=5")).json()).messages).toHaveLength(0);
+    expect(
+      (await (await p.app.request("/api/messages?limit=5")).json()).messages,
+    ).toHaveLength(0);
     expect(el("pRun").style.display).toBe("none");
     expect(el("pGoBtn").disabled).toBe(true);
 
@@ -211,5 +230,24 @@ describe("后台页·清空数据（DOM shim 驱动真实页面逻辑）", () =>
     expect(el("pSummary").textContent).toContain("bans 0");
     expect(el("pSummary").textContent).toContain("presence 0");
     expect(el("pSummary").textContent).toContain("rate_limits");
+  }, 20_000);
+
+  test("Origin 被拒时后台页给出可执行提示（而不是干巴巴的「来源不被允许」）", async () => {
+    // 模拟真实事故：白名单里没有当前域名（例如换了域名但没更新 ALLOWED_ORIGINS）
+    const p = await bootPage(
+      { allowedOrigins: ["https://old.example"] },
+      {
+        origin: "https://livechat.damon233.top",
+        location: "https://livechat.damon233.top",
+      },
+    );
+    const el = (id: string) => p.dom.document.getElementById(id);
+    await tick();
+    el("secret").value = "test-secret";
+    await el("loginBtn").onclick();
+    const msg = p.alerts.at(-1)!;
+    expect(msg).toContain("ALLOWED_ORIGINS");
+    expect(msg).toContain("https://livechat.damon233.top");
+    expect(msg).toContain("留空"); // 给出「或留空表示全开」这条出路
   }, 20_000);
 });

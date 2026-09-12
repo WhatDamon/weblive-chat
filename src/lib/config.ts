@@ -83,10 +83,12 @@ export function loadConfig(
   const adminSecret = env.ADMIN_SECRET ?? "";
   if (envName === "production" && !adminSecret)
     throw new Error("生产环境必须设置 ADMIN_SECRET");
-  const allowedOrigins = (env.ALLOWED_ORIGINS ?? "")
+  // ALLOWED_ORIGINS 留空 = 全开；写成 "*" 也按全开处理（否则 "*" 会被当成字面量来源，反而把所有带 Origin 的请求锁死）
+  const rawOrigins = (env.ALLOWED_ORIGINS ?? "")
     .split(",")
     .map((s) => s.trim().toLowerCase().replace(/\/+$/, ""))
     .filter(Boolean);
+  const allowedOrigins = rawOrigins.includes("*") ? [] : rawOrigins;
   const bannedWordsMode = env.BANNED_WORDS_MODE ?? "basic";
   if (
     bannedWordsMode !== "off" &&

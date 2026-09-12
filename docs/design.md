@@ -227,7 +227,7 @@ Cookie 安全：`HttpOnly; SameSite=Lax; Secure`（生产）；`ADMIN_SECRET` �
 
 > **定位与边界**：挡"第三方站点把你的 API 嵌进自家页面借力"与"跨站读取"；它**不是认证** —— 不带 Origin 的直连（curl/脚本/重放）无法靠它区分，强制手段仍是封禁 + 限流。
 
-环境变量：`ALLOWED_ORIGINS`（逗号分隔的精确域名）；`REQUIRE_ORIGIN=1`（可选收紧，见下）。
+环境变量：`ALLOWED_ORIGINS`（逗号分隔的精确域名；写 `*` 等价于留空）；`REQUIRE_ORIGIN=1`（可选收紧，见下）。被拒时 403 体会回显被拒来源 `origin` 与已配置数量 `allowed_origins_count`，`/api/meta` 的 `origin_mode` 公开当前闸口状态（`open`/`locked`）。**换域名后必须同步白名单并重新部署**——否则同源后台/聊天页的写请求会被自己的白名单拒掉。
 
 | 配置 | 行为 |
 |---|---|

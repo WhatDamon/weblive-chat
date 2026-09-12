@@ -12,7 +12,7 @@
 
 | 端点 | 说明 |
 |---|---|
-| `GET /api/meta` | 轻量配置（**无 DB 依赖**）：`{limits:{nick_max, text_max, retention_days}, presence:{ttl_s}, client_ip}` |
+| `GET /api/meta` | 轻量配置（**无 DB 依赖**）：`{limits:{nick_max, text_max, retention_days}, presence:{ttl_s}, client_ip, origin_mode}`；`origin_mode` 为 `open`（未配白名单）/`locked`（已配白名单，便于线上排查） |
 | `GET /api/messages?before=<id>&limit=<n>` | 历史回溯，**newest-first**；`limit` 缺省 50（合法 1–200 夹取，非纯数字 → `400 invalid_cursor`）；软删消息以占位返回；回溯深度受 `HISTORY_MAX_BACKFILL` 限制 |
 | `GET /api/messages?since=<id>&limit=<n>` | 增量补齐（gap-sync），**oldest-first**；与 SSE 事件按 `id` 去重由客户端负责 |
 | `POST /api/messages` | body `{client_id, nick, text}` → `201 {id, created_at}` |
@@ -105,7 +105,9 @@
 | 请求不带 Origin | 默认放行（同源/curl）；`REQUIRE_ORIGIN=1` 时拒绝 → `403 missing_origin` |
 
 - 匹配：精确 `scheme://host[:port]`，忽略路径/query、去尾斜杠、主机小写；**不支持通配**。
-- ⚠️ **白名单会锁住同源内置页**：浏览器写请求（POST/DELETE）必带当前页 Origin，设置名单时**必须把部署自身域名一并列入**，否则同源 `/demo.html` 发言与 `/admin` 封禁/删除均被 `403 origin_not_allowed` 拒（GET 历史/SSE 流不受影响）。
+- ⚠️ **白名单会锁住同源内置页**：浏览器写请求（POST/DELETE）必带当前页 Origin，设置名单时**必须把部署自身域名一并列入**，否则同源 `/demo.html` 发言与 `/admin` 封禁/删除均被 `403 origin_not_allowed` 拒（GET 历史/SSE 流不受影响）。**换域名后需同步更新该变量并重新部署**。
+- `ALLOWED_ORIGINS=*` 等价于留空（全开）；`REQUIRE_ORIGIN` 只控制「无 Origin」的情况，置 0 **不能**解除 `origin_not_allowed`。
+- 被拒的 403 响应体会附带 `error.origin`（被拒来源，归一化后）与 `error.allowed_origins_count`（已配置数量），便于定位；两者仅在 `origin_not_allowed` 时出现。
 - `OPTIONS` 预检：仅对放行 Origin 回 `204`，带 `Access-Control-Allow-Methods: GET,POST,DELETE,OPTIONS`、`Access-Control-Allow-Headers: content-type`、`Access-Control-Max-Age: 86400`。
 - 白名单是**来源限制而非认证**：拦不住不带 Origin 的脚本/curl（除非 `REQUIRE_ORIGIN=1`）；强制手段靠封禁 + 限流。
 
@@ -122,7 +124,8 @@
 | 400 | `invalid_token` | 危险操作预检令牌无效 / 已过期 / 档位或 IP 不符 / 已被使用 |
 | 401 | `invalid_secret` / `unauthorized` | 口令错 / 会话缺失·过期·被篡改 |
 | 403 | `banned` | 该 IP 被禁言（附 `reason`） |
-| 403 | `origin_not_allowed` / `missing_origin` | Origin 不在名单 / `REQUIRE_ORIGIN` 下缺 Origin |
+| 403 | `origin_not_allowed` | Origin 不在名单；响应体附 `origin`（被拒来源）与 `allowed_origins_count` |
+| 403 | `missing_origin` | `REQUIRE_ORIGIN=1` 下请求未带 Origin |
 | 404 | `not_found` | 解封不存在 / 删不存在的消息 |
 | 429 | `rate_limited` | 超限（附 `retry_after_ms`） |
 | 503 | `db_unavailable` | 存储不可用/冻结（含 Neon 冻结语义） |

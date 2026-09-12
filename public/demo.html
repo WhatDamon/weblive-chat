@@ -170,8 +170,12 @@ async function send() {
     // 发送失败/网络异常时的提示区写入（notice 区纯文本）
     if (!res.ok) {
       $("text").value = text; // 失败还原输入
+      const code = j && j.error && j.error.code;
       notice((j && j.error && j.error.message) || res.status + " 发送失败", true);
-      if (res.status === 403) setStatus("本机已被禁言", "bad");
+      // 403 有两个成因：被禁言（banned）与来源被拒（origin_not_allowed）——不可混为一谈
+      if (code === "banned") setStatus("本机已被禁言", "bad");
+      else if (code === "origin_not_allowed" || code === "missing_origin") setStatus("本页来源未被服务器允许", "bad");
+      else if (res.status === 403) setStatus("发送被拒绝（403）", "bad");
       else if (res.status === 429) setStatus("发送过于频繁", "bad");
       return;
     }

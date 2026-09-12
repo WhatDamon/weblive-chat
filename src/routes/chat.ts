@@ -54,6 +54,8 @@ export function registerChat(app: Hono, d: ChatDeps) {
       },
       presence: { ttl_s: Math.floor(cfg.presenceTtlMs / 1000) },
       client_ip: ip,
+      // Origin 闸口状态：curl /api/meta 即可确认是否被白名单锁住，无需翻环境变量
+      origin_mode: cfg.allowedOrigins.length ? "locked" : "open",
     });
   });
 
