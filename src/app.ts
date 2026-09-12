@@ -70,6 +70,8 @@ export function createApp(deps: AppDeps): Hono {
   });
 
   app.use("/api/*", async (c, next) => {
+    // Never cache API responses: /api/meta carries the caller's IP and /api/stream is unbounded.
+    c.header("cache-control", "no-store");
     const origin = c.req.header("origin");
     const cls = classifyOrigin(origin, cfg.allowedOrigins, cfg.requireOrigin);
     if (cls.mode === "open") {

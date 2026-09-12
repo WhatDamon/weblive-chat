@@ -27,7 +27,11 @@ export function renderPage(html: string): string {
     .replace("<!--COPY-->", copyBootstrap());
 }
 
+// Pages are static per deployment: let the edge serve repeats so page loads cost no instance time.
+const PAGE_CACHE = "public, s-maxage=300, stale-while-revalidate=600";
+
 const serve = async (c: Context, file: string) => {
+  c.header("cache-control", PAGE_CACHE);
   try {
     return c.html(renderPage(await readPublic(file)));
   } catch {
@@ -36,7 +40,10 @@ const serve = async (c: Context, file: string) => {
 };
 
 export function registerPages(app: Hono) {
-  app.get("/", (c) => c.redirect("/demo.html", 302));
+  app.get("/", (c) => {
+    c.header("cache-control", PAGE_CACHE);
+    return c.redirect("/demo.html", 302);
+  });
   app.get("/demo.html", (c) => serve(c, "demo.html"));
   app.get("/admin", (c) => serve(c, "admin.html"));
   app.get("/admin.html", (c) => serve(c, "admin.html"));
