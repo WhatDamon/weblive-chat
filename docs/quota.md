@@ -1,7 +1,7 @@
 # 前端省额度指南（Vercel Hobby · 实例时间）
 
 面向接入本后端的**前端开发者**：不改任何 API 契约，只讲「同样的功能，怎么少烧额度」。
-服务端侧已做的优化与完整账目见 README「Hobby 免费额度能撑多久」和 `docs/design.md` §7.4；接口细节见 `docs/api.md`，完整客户端骨架见 `docs/integration.md`。
+服务端侧已做的优化与完整账目见 `docs/design.md` §7.4；接口细节见 `docs/api.md`，完整客户端骨架见 `docs/integration.md`。
 
 ---
 
