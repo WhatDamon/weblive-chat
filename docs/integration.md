@@ -513,6 +513,8 @@ async function connect() {
 - 阈值可覆盖：页面若存在 `window.WL = { idleMs, pollMs }` 则用它（内置页默认 5 分钟 / 30s）。
 - 补缺口时注意：历史接口会把「已删除」的消息以 `deleted:true, text:null` 返回，凡已渲染过的条目要就地替换成删除占位（内置页的 `loadHistory(true)` 就是这么做的）。
 
+> 更完整的「前端怎么做才省」清单（含 SPA 释放、重连退避、多标签共享、自检清单）见 **`docs/quota.md`**。
+
 还有两档更省的做法：
 
 - **纯轮询（推荐给“几十人同时在线”的规模）**：完全不建流，每 30s 拉一次 `/api/messages?since=<本地最新 messages.id>`（成本约 0.03–0.1 GB-hr/小时，常连是 2 GB-hr/小时，省 20–60 倍）。代价是没有 presence/`delete`/`notice` 实时事件，需自行轮询补齐。
