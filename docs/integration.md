@@ -398,7 +398,7 @@ const toISO = (v) => new Date(toMs(v)).toISOString();
 | 部署配置 | 行为 |
 |---|---|
 | 未设 `ALLOWED_ORIGINS`（默认） | 开放：响应 `access-control-allow-origin: *`，任何站点可调用 |
-| 设了 `ALLOWED_ORIGINS` | 白名单 fail-closed：命中则回显该 Origin 并加 `Vary: Origin`；未命中 → `403 origin_not_allowed`（响应体附 `origin` 与 `allowed_origins_count`）；写 `*` 等价于留空（全开） |
+| 设了 `ALLOWED_ORIGINS` | 白名单 fail-closed：命中则回显该 Origin 并加 `Vary: Origin`；未命中 → `403 origin_not_allowed`（响应体附 `origin` 与 `allowed_origins_count`）；支持 `*.damon233.top` **通配整域**（含主域与全部子域，可写 `https://*.x.com` 限定协议、`*.x.com:8443` 限定端口）；写 `*` 等价于留空（全开） |
 | `REQUIRE_ORIGIN=1` | 连无 Origin 的直连（curl / 服务端对服务端）也拒绝 → `403 missing_origin` |
 
 预检：`OPTIONS /api/*` 返回 `204`，允许 `GET,POST,DELETE,OPTIONS`，允许头 `content-type`，`Max-Age: 86400`。
@@ -406,7 +406,8 @@ const toISO = (v) => new Date(toMs(v)).toISOString();
 接入要点：
 
 - **白名单必须包含你自己的页面域名**（含内置 `/demo.html`、`/admin` 所在域名），否则同源页面自己
-  也会被 403 挡掉——这是最常见的「接完就打不开」原因。
+  也会被 403 挡掉——这是最常见的「接完就打不开」原因。若你会经常换子域（或本地 + 线上多域名），直接用通配：`ALLOWED_ORIGINS=*.damon233.top,http://localhost:3000`，比逐个列举省事且不会再漏。
+- **通配符写错会让配置加载失败**（如 `https://*`、`*.`、`https://a.*.b.com`、端口非数字）：本地进程直接退出；Vercel 上请求报错且日志指明条目。宁可直接失败也不静默失效；精确条目忘了写 `https://` 则永远不会匹配（只记一条启动告警）。
 - **Origin 白名单不是鉴权**：它只拦「第三方网页在浏览器里调用」，`curl` 或自建脚本可以随意伪造
   `Origin`。真正的访问控制是 IP 禁言 + 限流。
 - **只信 `Origin`，不要依赖 `Referer`**（可被剥离/伪造）。

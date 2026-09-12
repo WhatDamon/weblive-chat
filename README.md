@@ -62,7 +62,7 @@ bun run dev                   # http://localhost:3000
 | `TURSO_AUTH_TOKEN` | 空 | 仅 Turso（`libsql://`）需要 |
 | `ADMIN_SECRET` | 仅本地开发有内置回退值 | 管理后台口令；**生产（`NODE_ENV=production`）缺失即拒绝启动**，请设为长随机串 |
 | `NODE_ENV` | `development` | Vercel 自动设为 `production` |
-| `ALLOWED_ORIGINS` | 空（开放） | 逗号分隔精确 Origin，如 `https://a.com,http://localhost:3000`；一旦设置即白名单 fail-closed。写 `*` 等价于留空（全开），不会被当成字面量来源。⚠️ **设置时须把部署自身域名一并列入**（同源 `/demo.html`、`/admin` 页与同源前端，浏览器对 POST 必带 Origin），否则内置页面/同源应用的写请求会被 403 拒；**换域名后必须同步更新此变量**（改完需重新部署才生效） |
+| `ALLOWED_ORIGINS` | 空（开放） | 逗号分隔 Origin，如 `https://a.com,http://localhost:3000`；支持**通配整域** `*.damon233.top`（含该域名与全部子域，可写 `https://*.x.com` 限定协议、`*.x.com:8443` 限定端口；**写错的通配符会让配置加载直接失败**（本地进程退出、Vercel 上请求报错，错误信息会指明具体条目），不会静默失效）。一旦设置即白名单 fail-closed；写 `*` 等价于留空（全开），不会被当成字面量来源。⚠️ **设置时须把部署自身域名一并列入**（同源 `/demo.html`、`/admin` 页与同源前端，浏览器对 POST 必带 Origin），否则内置页面/同源应用的写请求会被 403 拒；**换域名后必须同步更新此变量**（改完需重新部署才生效） |
 | `REQUIRE_ORIGIN` | `0` | `1` 时无 Origin 的直连（curl/脚本）也拒绝（`403 missing_origin`） |
 | `NICK_MAX` | `24` | 昵称最大字符数 |
 | `TEXT_MAX` | `1000` | 消息内容最大字符数 |

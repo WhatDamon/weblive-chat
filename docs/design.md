@@ -227,17 +227,19 @@ Cookie 安全：`HttpOnly; SameSite=Lax; Secure`（生产）；`ADMIN_SECRET` �
 
 > **定位与边界**：挡"第三方站点把你的 API 嵌进自家页面借力"与"跨站读取"；它**不是认证** —— 不带 Origin 的直连（curl/脚本/重放）无法靠它区分，强制手段仍是封禁 + 限流。
 
-环境变量：`ALLOWED_ORIGINS`（逗号分隔的精确域名；写 `*` 等价于留空）；`REQUIRE_ORIGIN=1`（可选收紧，见下）。被拒时 403 体会回显被拒来源 `origin` 与已配置数量 `allowed_origins_count`，`/api/meta` 的 `origin_mode` 公开当前闸口状态（`open`/`locked`）。**换域名后必须同步白名单并重新部署**——否则同源后台/聊天页的写请求会被自己的白名单拒掉。
+环境变量：`ALLOWED_ORIGINS`（逗号分隔的 `scheme://host[:port]` 精确条目或 `*.domain` 通配条目；写 `*` 等价于留空）；`REQUIRE_ORIGIN=1`（可选收紧，见下）。被拒时 403 体会回显被拒来源 `origin` 与已配置数量 `allowed_origins_count`，`/api/meta` 的 `origin_mode` 公开当前闸口状态（`open`/`locked`）。**换域名后必须同步白名单并重新部署**——否则同源后台/聊天页的写请求会被自己的白名单拒掉。
 
 | 配置 | 行为 |
 |---|---|
 | `ALLOWED_ORIGINS` 未设置 | **开放模式**：公开端点 CORS `*`；管理端点仍仅同源 |
-| 设置名单（如 `https://a.com,https://b.com`） | **白名单模式（fail-closed）**：请求带 Origin 且不在名单 → `403 origin_not_allowed`；在名单 → 回显对应 `Access-Control-Allow-Origin` |
+| 设置名单（如 `https://a.com,*.damon233.top`） | **白名单模式（fail-closed）**：请求带 Origin 且不命中任何条目 → `403 origin_not_allowed`；命中 → 回显对应 `Access-Control-Allow-Origin` |
 | 请求不带 Origin（同源 / 非浏览器 / curl） | 默认放行；`REQUIRE_ORIGIN=1` 时强制要求且必须在名单内（拒绝码 `403 missing_origin`，适合纯 API 部署） |
 
 规则：
 
-1. 精确匹配 `scheme://host[:port]`：忽略路径/query、去尾斜杠、小写主机；不做子串匹配；`https://*.a.com` 通配暂不支持（多域名直接列举）。
+1. 匹配语法：精确条目为 `scheme://host[:port]`（忽略路径/query、去尾斜杠、小写主机，不做子串匹配）；通配条目 `*.domain` 覆盖**该域名本身与任意层级子域**，可省略协议（http/https 均放行）或用 `https://*.domain` 限定协议、`:port` 限定端口（未写端口时只匹配该协议的默认端口）。
+   - **为何把主域也算进 `*.domain`**：通配的语义是"我拥有这个域名家族"，而主域恰恰是其中最难被劫持的一个（悬空 CNAME 多出在子域）；把它排除只会制造"写了通配却在主域被 403"的坑。这是相对 nginx/Spring 惯例的有意偏离，已在 `docs/api.md` 写明。
+   - 通配符写错（`https://*`、`https://a.*.b.com`、`*.`、端口非数字）会让**配置加载直接失败**（本地进程退出、Vercel 上请求报错，错误信息指明具体条目），而不是静默失效：安全边界上的"静默永不匹配"比明确失败更难排查（曾发生过换域名后忘记同步白名单导致同源后台全部 403 的事故）。
 2. 名单含多个域名时，禁止 `Access-Control-Allow-Origin: *` 与 `Access-Control-Allow-Credentials` 同用；所有响应带 `Vary: Origin`，防 CDN 缓存错发。
 3. 仅信 **Origin**，不信 `Referer`（可伪造、隐私策略下常缺失）。
 4. 管理端点默认仅同源（Cookie 天然约束）；需自建跨源管理前端时，把该域名显式加入名单并启用 credentials 模式。

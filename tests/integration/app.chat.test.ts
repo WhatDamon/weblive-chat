@@ -207,6 +207,27 @@ describe("chat 公开端点", () => {
     expect(openMeta.origin_mode).toBe("open");
   });
 
+  test("Origin 通配符子域：同域任意子域放行并回显 ACAO", async () => {
+    const locked = await boot({ allowedOrigins: ["*.damon233.top"] });
+    const ok = await locked.app.request("/api/meta", {
+      headers: { origin: "https://livechat.damon233.top" },
+    });
+    expect(ok.status).toBe(200);
+    expect(ok.headers.get("access-control-allow-origin")).toBe(
+      "https://livechat.damon233.top",
+    );
+    expect((await ok.json()).origin_mode).toBe("locked");
+    const apex = await locked.app.request("/api/meta", {
+      headers: { origin: "https://damon233.top" },
+    });
+    expect(apex.status).toBe(200);
+    const other = await locked.app.request("/api/meta", {
+      headers: { origin: "https://evil-damon233.top" },
+    });
+    expect(other.status).toBe(403);
+    expect((await other.json()).error.code).toBe("origin_not_allowed");
+  });
+
   test("维护触发：接近 maxRows 广播 notice；到顶 → ephemeral 停写历史", async () => {
     const { app, repo } = await boot({ maxRows: 4, maintenanceEvery: 1 });
     const send = () =>

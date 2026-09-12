@@ -59,6 +59,26 @@ describe("loadConfig", () => {
     ).toEqual([]);
   });
 
+  test("ALLOWED_ORIGINS 支持 *.domain 通配符，且不会被误判为全开", () => {
+    expect(
+      loadConfig({
+        ...base,
+        ALLOWED_ORIGINS: "https://a.com, *.damon233.top",
+      }).allowedOrigins,
+    ).toEqual(["https://a.com", "*.damon233.top"]);
+  });
+
+  test("ALLOWED_ORIGINS 非法条目启动即报错（静默永不匹配比报错更难排查）", () => {
+    for (const bad of ["https://*", "*.damon233.top:8a", "https://a.*.b.com"])
+      expect(() => loadConfig({ ...base, ALLOWED_ORIGINS: bad })).toThrow(
+        /ALLOWED_ORIGINS/,
+      );
+    // 无 scheme 的精确条目照旧保留（旧行为不变，仅运行时告警）
+    expect(
+      loadConfig({ ...base, ALLOWED_ORIGINS: "damon233.top" }).allowedOrigins,
+    ).toEqual(["damon233.top"]);
+  });
+
   test("DB_PROVIDER=memory：无需 DATABASE_URL，供本地/单实例纯内存演示", () => {
     const cfg = loadConfig({ ...base, DB_PROVIDER: "memory" });
     expect(cfg.dbProvider).toBe("memory");

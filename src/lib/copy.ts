@@ -128,7 +128,7 @@ export const COPY = {
     tableJoin: "、",
 
     originDenied:
-      "当前域名未获得接口访问许可。\n请在部署环境变量 ALLOWED_ORIGINS 中加入 {origin}（留空表示不限制），然后重新部署。",
+      "当前域名未获得接口访问许可。\n请在部署环境变量 ALLOWED_ORIGINS 中加入 {origin}（或用 *.你的域名 放行整域，留空表示不限制），然后重新部署。",
     originRequired:
       "服务器要求请求携带 Origin。\n请通过部署域名访问本页，或去掉 REQUIRE_ORIGIN 限制。",
     actionFailed: "操作失败：{msg}",

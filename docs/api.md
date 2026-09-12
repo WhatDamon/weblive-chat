@@ -102,10 +102,11 @@
 | 配置 | 行为 |
 |---|---|
 | `ALLOWED_ORIGINS` 未设置 | 开放模式：公开端点 `Access-Control-Allow-Origin: *` |
-| 设置名单（逗号分隔精确 Origin） | 白名单模式（fail-closed）：名单内请求回显该 Origin + `Vary: Origin`；名单外 → `403 origin_not_allowed` |
+| 设置名单（逗号分隔 Origin，可用 `*.domain` 通配） | 白名单模式（fail-closed）：名单内请求回显该 Origin + `Vary: Origin`；名单外 → `403 origin_not_allowed` |
 | 请求不带 Origin | 默认放行（同源/curl）；`REQUIRE_ORIGIN=1` 时拒绝 → `403 missing_origin` |
 
-- 匹配：精确 `scheme://host[:port]`，忽略路径/query、去尾斜杠、主机小写；**不支持通配**。
+- 匹配：精确条目为 `scheme://host[:port]`（忽略路径/query、去尾斜杠、主机小写）；通配条目 `*.domain` 匹配**该域名本身与任意层级子域**，可省略协议（http/https 都放行）或用 `https://*.domain` 限定协议，可加 `:port` 限定端口（默认只匹配默认端口）。
+- 通配符写错（如 `https://*`、`https://a.*.b.com`、`*.`、端口非数字）会让**配置加载直接失败**（本地进程退出、Vercel 上请求报错，错误信息指明具体条目），避免“以为放行了其实永不匹配”；精确条目缺 `scheme://` 无法匹配（Origin 必带协议），只记一条启动告警。
 - ⚠️ **白名单会锁住同源内置页**：浏览器写请求（POST/DELETE）必带当前页 Origin，设置名单时**必须把部署自身域名一并列入**，否则同源 `/demo.html` 发言与 `/admin` 封禁/删除均被 `403 origin_not_allowed` 拒（GET 历史/SSE 流不受影响）。**换域名后需同步更新该变量并重新部署**。
 - `ALLOWED_ORIGINS=*` 等价于留空（全开）；`REQUIRE_ORIGIN` 只控制「无 Origin」的情况，置 0 **不能**解除 `origin_not_allowed`。
 - 被拒的 403 响应体会附带 `error.origin`（被拒来源，归一化后）与 `error.allowed_origins_count`（已配置数量），便于定位；两者仅在 `origin_not_allowed` 时出现。

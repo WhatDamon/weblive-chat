@@ -84,6 +84,12 @@ export function loadConfig(
   // "*" means open mode: taken literally it would lock out every origin-bearing request.
   const rawOrigins = parseOriginList(env.ALLOWED_ORIGINS);
   const allowedOrigins = rawOrigins.includes("*") ? [] : rawOrigins;
+  // An Origin always carries a scheme, so a scheme-less exact entry can never match.
+  const dead = allowedOrigins.filter((o) => o !== "null" && !o.includes("//"));
+  if (dead.length)
+    console.error(
+      `[config] ALLOWED_ORIGINS entries without a scheme can never match: ${dead.join(", ")}`,
+    );
   const bannedWordsMode = env.BANNED_WORDS_MODE ?? "basic";
   if (
     bannedWordsMode !== "off" &&
