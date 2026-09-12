@@ -77,7 +77,8 @@ $("nick").addEventListener("input", () => store.set("wl.nick", $("nick").value.t
 
 const listEl = $("messages");
 const seen = new Map();          // id -> li (ids are strings)
-let esClosed = false;
+let ctrl = null;                 // active stream handle, aborted when the page hides
+let paused = document.visibilityState === "hidden"; // a hidden page holds no stream
 // seen dedupes all ids; `since` is only the resume bound, advanced for numeric ids.
 
 const NOTE = "placeholder"; // empty-state marker
@@ -139,17 +140,22 @@ function markDeleted(id) {
   }
 }
 
-async function loadHistory() {
-  setNote(COPY.chat.noteLoading);
+// sync = re-run when a hidden page returns: applies deletions and leaves the note alone.
+async function loadHistory(sync) {
+  if (!sync) setNote(COPY.chat.noteLoading);
   try {
     const j = await fetch("/api/messages?limit=50").then((r) => r.json());
     // API returns newest-first; prepending needs oldest-first
     const msgs = j.messages.slice().reverse();
-    for (const m of msgs) renderMessage(m);
+    for (const m of msgs) {
+      if (m.deleted && seen.has(String(m.id))) markDeleted(m.id);
+      else renderMessage(m);
+    }
+    if (sync) return;
     if (j.mode === "ephemeral") setNote(COPY.chat.noteEphemeral);
     else if (!msgs.length) setNote(COPY.chat.noteEmpty);
     else setNote(null);
-  } catch { setNote(null); /* silent: the SSE side recovers */ }
+  } catch { if (!sync) setNote(null); /* silent: the SSE side recovers */ }
 }
 
 async function send() {
@@ -182,10 +188,12 @@ async function send() {
 
 let since = 0;
 async function connect() {
-  while (!esClosed) {
+  while (true) {
+    if (paused) { await sleep(1000); continue; } // wait here until the page is visible again
     setStatus(COPY.chat.statusConnecting);
+    ctrl = new AbortController();
     try {
-      const res = await fetch("/api/stream?client_id=" + encodeURIComponent(cid) + (since ? "&since=" + since : ""));
+      const res = await fetch("/api/stream?client_id=" + encodeURIComponent(cid) + (since ? "&since=" + since : ""), { signal: ctrl.signal });
       if (!res.ok) {
         let msg = res.status + " " + res.statusText;
         try { const j = await res.json(); msg = (j && j.error && j.error.message) || msg; } catch {}
@@ -207,6 +215,8 @@ async function connect() {
         }
       }
     } catch {}
+    ctrl = null;
+    if (paused) continue; // aborted because the page hid: no reconnect status needed
     setStatus(COPY.chat.statusReconnecting, "bad");
     await sleep(1000);
   }
@@ -245,6 +255,14 @@ function bumpSince(id) {
 }
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+// Releasing the stream while hidden is the biggest server-cost saver; the resume path re-syncs
+// history so nothing is missed.
+document.addEventListener("visibilitychange", () => {
+  paused = document.visibilityState === "hidden";
+  if (paused) { ctrl?.abort(); setStatus(COPY.chat.statusPaused); }
+  else { loadHistory(true); setStatus(COPY.chat.statusConnecting); }
+});
 
 $("send").onclick = send;
 $("text").addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });

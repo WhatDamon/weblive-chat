@@ -10,6 +10,9 @@ export interface StreamRepo {
 
 export interface StreamCfg {
   pollMs: number;
+  idlePollMs: number;
+  idleAfterMs: number;
+  eventProbeMs: number;
   presenceUpsertMs: number;
   presenceCountMs: number;
   heartbeatMs: number;
@@ -32,14 +35,22 @@ export function runStream(o: StreamOpts): { stop: () => void } {
   let since = o.since ?? 0;
   let lastOnline: number | null = null;
   let lastSent = Date.now();
+  let lastEventAt = Date.now();
+  let lastProbe = 0;
   let lastUpsert = 0;
   let lastCount = 0;
   const emitComment = o.emitComment ?? (() => {});
 
   const tickPoll = async () => {
     let rows = await o.repo.eventsSince(since, 100);
-    if (rows.length === 0 && since > 0) {
-      // Cursor fallback: events behind the cursor were already purged, so restart from max id.
+    // Cursor fallback: events behind the cursor were already purged. Probed at most once per
+    // eventProbeMs, otherwise an idle stream would run two queries per tick instead of one.
+    if (
+      rows.length === 0 &&
+      since > 0 &&
+      Date.now() - lastProbe >= o.cfg.eventProbeMs
+    ) {
+      lastProbe = Date.now();
       const maxId = await o.repo.eventsMaxId();
       if (since > maxId) since = Math.max(maxId, 0);
       rows = await o.repo.eventsSince(since, 100);
@@ -57,7 +68,10 @@ export function runStream(o: StreamOpts): { stop: () => void } {
       pushed++;
     }
     // lastSent only advances on real writes, so an idle stream still reaches the heartbeat.
-    if (pushed > 0) lastSent = Date.now();
+    if (pushed > 0) {
+      lastSent = Date.now();
+      lastEventAt = lastSent;
+    }
   };
   // Rate-gate presence writes and counts: at 1s ticks they would blow the DB write budget.
   const tickUpsert = async () => {
@@ -101,7 +115,11 @@ export function runStream(o: StreamOpts): { stop: () => void } {
       }
       await tickCount();
       const elapsed = Date.now() - cycleStart;
-      await sleep(Math.max(o.cfg.pollMs - elapsed, 0)); // keep ticks aligned
+      // Quiet streams back off: fewer wakeups, fewer queries, and no held-open instance does realtime
+      // work when nobody is talking. An event resets the cadence to pollMs.
+      const quiet = Date.now() - lastEventAt >= o.cfg.idleAfterMs;
+      const wait = quiet ? o.cfg.idlePollMs : o.cfg.pollMs;
+      await sleep(Math.max(wait - elapsed, 0)); // keep ticks aligned
     }
   })().catch((err) => {
     o.emit("error", { code: "db_unavailable", message: String(err) });

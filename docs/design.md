@@ -44,7 +44,7 @@
 | D10 | 存储超限**自动降级**：历史持久化与实时广播解耦，必要时停写历史、仅实时（§7.2） | 免费额度耗尽应"降级保活"而非静默丢消息 |
 | D11 | 可移植性规则（§4.1）：整数自增主键 + TEXT 载荷 + **时间一律 epoch ms 整数、应用层算好传参**，SQL 层禁方言写法（`now()`/`interval`/JSONB 等） | 否则换库要改代码；"跨方言子集 + 显式 provider"是复用的根基 |
 | D12 | 可选**来源白名单**：`ALLOWED_ORIGINS` 未设置 = 开放（CORS `*`）；设置后 fail-closed（不在名单的跨源请求 `403 origin_not_allowed`）；无 Origin 直连默认放行，`REQUIRE_ORIGIN=1` 可收紧（§6.1） | 防第三方站点套壳/跨站借力；明确其**非认证**，强制手段仍靠封禁 + 限流 |
-| D13 | 建表 = **启动幂等自建**：`DB_MIGRATE_ON_BOOT`（默认开）首次请求前 `CREATE TABLE IF NOT EXISTS`；schema 演进期后再引入版本化 SQL 迁移 | "直接部署到 Vercel" 零手动步骤；当前 schema 小，自建表足够 |
+| D13 | 建表 = **启动幂等自建（无开关）**：首次请求前 `CREATE TABLE IF NOT EXISTS`（libsql 走 `batch()` 一次往返）；schema 演进期后再引入版本化 SQL 迁移 | "直接部署到 Vercel" 零手动步骤；开关只能关掉必要步骤，故不提供 |
 | D14 | 历史回溯默认**全量开放**（可翻页）；`HISTORY_MAX_BACKFILL` 可限回溯深度/关闭（0=不限制）。免登录下历史 = 公开存档，README 明示合规风险 | 开箱即用（新访客补上下文）；部署者按需收紧 |
 | D15 | 内置**零构建聊天页**（同源 `public/demo.html`，随本 Vercel 项目部署）；`/api/meta` 暴露 `client_ip` 供前端展示本机 IP | 同源免 CORS、部署后即可线上验证 SSE+DB；前端示范 since 重连与缺口补齐；`client_ip` 是本期唯一契约扩展 |
 | D16 | 存储层 = **手写可移植 SQL 仓库**（不引入 ORM）：跨方言 SQL 子集 + 按 provider 维护的幂等 DDL（`lib/ddl.ts`/`lib/repo.ts`）；数据模型增加第 5 表 `rate_limits` 支撑原子限流计数 | 依赖最少，file:sqlite / Postgres 同一套集成测试双跑最稳；Serverless 无共享内存，限流计数必须落库原子自增（§4） |
@@ -133,7 +133,7 @@ rate_limits (
 
 > presence 行 TTL 过期后**不自动删除**（每 client 一行、upsert 覆盖）；清洗节点顺带删除 `last_seen` 早于 TTL 数倍的过期行，防离线 client 累积（§7.2）。
 
-迁移/建表：**启动幂等自建**（D13）——`DB_MIGRATE_ON_BOOT`（默认开）首次请求前执行 `CREATE TABLE IF NOT EXISTS`；表定义见 §9 `lib/ddl.ts`（按 provider 维护，本实现期不引入 ORM，见 D16）；schema 演进期后再引入版本化 SQL 迁移（`bun run db:migrate`）。
+迁移/建表：**启动幂等自建**（D13）——首次请求前执行 `CREATE TABLE IF NOT EXISTS`（libsql 走 `batch()` 一次往返）；表定义见 §9 `lib/ddl.ts`（按 provider 维护，本实现期不引入 ORM，见 D16）；schema 演进期后再引入版本化 SQL 迁移（`bun run db:migrate`）。
 
 ### 4.1 Provider 矩阵与可移植性规则
 
@@ -248,6 +248,8 @@ Cookie 安全：`HttpOnly; SameSite=Lax; Secure`（生产）；`ADMIN_SECRET` �
 ## 7. 容量与成本模型（含免费额度核算）
 
 > **v0.1 修正**：初稿默认 Neon 并称"50 并发可承受"——**未计入 Neon 的 CU（compute 活跃小时）计费**。SSE 轮询会让 compute 7×24 活跃（≈720 CU-h/月，免费仅 ~100），持续在线几周即被**冻结到下个账单周期**。故默认存储改为 Turso（按读/写行数计费、空闲零成本），Neon 保留为可选 provider。
+>
+> **v0.2 修正（平台侧额度）**：v0.1 只核算了数据库额度，漏了 **Vercel 函数自身**的额度。Hobby 档函数**固定 2 GB / 1 vCPU 且不可下调**（`vercel.json` 也无法设置，设了只会在构建期告警），额度为 **360 GB-hr 内存时长 + 4 CPU-hr + 100 万次调用/月**。Provisioned Memory 从实例启动计到**最后一个在途请求结束**，即 **SSE 常连 = 实例不释放**；折合 **360/2 = 180 实例小时**，而一个 7×24 常显标签页 = 720 小时/月——**单个常连页面就超 3 倍**。故 v0.2 的优化重心是"缩短实例占用时长"（§7.4），而不只是看 DB。
 
 ### 7.1 配额语义与预算数学
 
@@ -292,6 +294,19 @@ Cookie 安全：`HttpOnly; SameSite=Lax; Secure`（生产）；`ADMIN_SECRET` �
 
 - **封禁粒度**：精确 IP；后续加 CIDR/前缀匹配只涉及校验函数与索引，不改契约。
 
+### 7.4 Vercel 函数侧的省额度设计（v0.2）
+
+| 措施 | 机制 | 效果 |
+| --- | --- | --- |
+| 页面隐藏即释放流 | 前端 `visibilitychange` 时 abort 流；可见时带 `since` 重连并补历史（内置页已实现） | 后台标签页占用归零（常连页的最大来源） |
+| 静默退避 | 30s 无事件后轮询 1s → 3s | 冷清房间的查询与 CPU 唤醒降约 2/3 |
+| 探测门控 | `MAX(events.id)` 回退探测由每 tick 改为 10s 一次 | 空闲流 DB 往返由 2 次/秒降为 1 次/秒 |
+| presence 写频 20s（TTL 45s 不变） | 心跳写入减半 | Turso 免费写入额度可支撑的在线人数翻倍 |
+| 冷启动建表一次往返 | libsql `batch()` 合并 7 条 DDL | 每次实例冷启动少 6 次往返 |
+| 单流上限 300s + 重连续传 | 不需要 WebSocket | 规避平台时长硬限 |
+
+> 量级估算：常连 1s 轮询按每 tick ≈1.5 ms CPU 计约 **1 CPU-hr/月/连接**（Hobby 共 4 CPU-hr）；30s 低频轮询按每次请求实例存活 0.5s 计约 **0.03 GB-hr/小时**，而常连为 **2 GB-hr/小时**——差约两个数量级。几十个常显标签页的规模建议改低频轮询或升 Pro。
+
 ## 8. 测试策略
 
 - **单元**（内存 repository，恒跑）：校验器（长度/禁词/UUID）、限流桶算法、会话签名/验签、来源白名单逻辑（精确匹配/预检/无 Origin/单域名 credentials）。
@@ -317,7 +332,7 @@ src/
 public/demo.html      # 聊天页（零构建、同源）
 public/admin.html     # 管理页（零构建）
 scripts/              # 演进期启用：版本化 SQL 迁移（不引入 ORM，见 D16）
-.env.example（含 DB_PROVIDER、三种 URL、ALLOWED_ORIGINS、DB_MIGRATE_ON_BOOT、HISTORY_MAX_BACKFILL 示例）  vercel.json  docs/api.md(实现期由本规格提取)
+.env.example（含 DB_PROVIDER、三种 URL、ALLOWED_ORIGINS、PURGE_RATE_PER_MIN、HISTORY_MAX_BACKFILL 示例）  vercel.json  docs/api.md(实现期由本规格提取)
 tests/                # bun test（单元为主）
 ```
 

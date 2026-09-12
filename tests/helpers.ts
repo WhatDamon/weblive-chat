@@ -41,7 +41,6 @@ export function testCfg(over: Partial<AppConfig> = {}): AppConfig {
     dbProvider: "sqlite",
     // placeholder: makeApp builds the real repo in its own temp dir
     databaseUrl: "file:cfg-placeholder.db",
-    migrateOnBoot: true,
     adminSecret: "test-secret",
     devIp: "127.0.0.1",
     nickMax: 24,
@@ -56,6 +55,9 @@ export function testCfg(over: Partial<AppConfig> = {}): AppConfig {
     backfillMax: 0,
     presenceTtlMs: 45_000,
     pollMs: 10,
+    idlePollMs: 10,
+    idleAfterMs: 1_000_000,
+    eventProbeMs: 0,
     presenceUpsertMs: 10,
     presenceCountMs: 10,
     heartbeatMs: 15_000,

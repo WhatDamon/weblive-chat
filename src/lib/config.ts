@@ -1,4 +1,5 @@
 import type { BannedWordsMode } from "./wordfilter";
+import { parseOriginList } from "./security";
 
 export type Provider = "sqlite" | "postgres" | "memory";
 
@@ -17,7 +18,6 @@ export interface AppConfig {
   dbProvider: Provider;
   databaseUrl: string;
   tursoAuthToken?: string;
-  migrateOnBoot: boolean;
   adminSecret: string;
   devIp: string; // fallback when x-forwarded-for is absent (local dev, no proxy)
   nickMax: number;
@@ -32,6 +32,9 @@ export interface AppConfig {
   backfillMax: number;
   presenceTtlMs: number;
   pollMs: number;
+  idlePollMs: number;
+  idleAfterMs: number;
+  eventProbeMs: number;
   presenceUpsertMs: number;
   presenceCountMs: number;
   heartbeatMs: number;
@@ -78,11 +81,8 @@ export function loadConfig(
   const adminSecret = env.ADMIN_SECRET ?? "";
   if (envName === "production" && !adminSecret)
     throw new Error("ADMIN_SECRET is required in production");
-  // Empty = open mode; "*" also means open, since treating it literally locks out every origin.
-  const rawOrigins = (env.ALLOWED_ORIGINS ?? "")
-    .split(",")
-    .map((s) => s.trim().toLowerCase().replace(/\/+$/, ""))
-    .filter(Boolean);
+  // "*" means open mode: taken literally it would lock out every origin-bearing request.
+  const rawOrigins = parseOriginList(env.ALLOWED_ORIGINS);
   const allowedOrigins = rawOrigins.includes("*") ? [] : rawOrigins;
   const bannedWordsMode = env.BANNED_WORDS_MODE ?? "basic";
   if (
@@ -100,7 +100,6 @@ export function loadConfig(
     dbProvider: provider,
     databaseUrl,
     tursoAuthToken: env.TURSO_AUTH_TOKEN,
-    migrateOnBoot: (env.DB_MIGRATE_ON_BOOT ?? "true") !== "false",
     adminSecret: adminSecret || "dev-insecure-secret",
     devIp: env.DEV_IP ?? "127.0.0.1",
     nickMax: envInt(env, "NICK_MAX", 24),
@@ -120,7 +119,10 @@ export function loadConfig(
     backfillMax: envInt(env, "HISTORY_MAX_BACKFILL", 0),
     presenceTtlMs: 45_000,
     pollMs: 1_000,
-    presenceUpsertMs: 10_000,
+    idlePollMs: 3_000,
+    idleAfterMs: 30_000,
+    eventProbeMs: 10_000,
+    presenceUpsertMs: 20_000,
     presenceCountMs: 5_000,
     heartbeatMs: 15_000,
     eventsTtlMs: 3_600_000,

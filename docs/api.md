@@ -53,6 +53,7 @@
 ### 流与游标语义
 
 - `/api/stream` 的 `since` 指向 **`events.id`**（出站表保留 ~1h）；`/api/messages?since=` 指向 **`messages.id`**——**两个独立 id 空间**。
+- 实时性：房间活跃时下行延迟 ≤1s；静默 30s 后服务端把轮询退避到 3s（省函数实例时长），此时首帧最坏延迟约 3s，后续事件回到 1s。
 - 客户端流程：开流（`since=0` 或上次游标）→ 历史/gap-sync 走 `/api/messages?since=` → 事件按消息 `id` 去重。
 - **回退规则**（服务端自动）：若 `since` 落后于 events 保留期（旧游标空转），把游标重置为当前最大 `events.id` 并从该处继续；**缺口用 `/api/messages?since=<本地最新 messages.id>` 补齐**。
 - 断线重连由客户端负责：Vercel 函数单次最长 300s，到点断流是预期行为，携带 `since` 重连即可。

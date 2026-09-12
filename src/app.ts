@@ -28,7 +28,7 @@ export function createApp(deps: AppDeps): Hono {
     if (!booted)
       booted = (async () => {
         try {
-          if (cfg.migrateOnBoot) await repo.bootstrap();
+          await repo.bootstrap();
         } catch (err) {
           // Don't cache a rejected bootstrap; the next request retries (DDL is idempotent).
           booted = null;
@@ -49,7 +49,10 @@ export function createApp(deps: AppDeps): Hono {
         extra: cfg.bannedWords,
         allow: cfg.bannedWordsAllow,
       }).catch((err) => {
-        console.error("[wordfilter] wordlist load failed, using explicit words only:", err);
+        console.error(
+          "[wordfilter] wordlist load failed, using explicit words only:",
+          err,
+        );
         return buildWordFilter(cfg.bannedWords, cfg.bannedWordsAllow);
       });
     }

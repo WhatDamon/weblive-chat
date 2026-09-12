@@ -177,7 +177,8 @@ class SqliteRepo implements Repo {
   readonly provider = "sqlite" as const;
   constructor(private c: Client) {}
   async bootstrap(): Promise<void> {
-    for (const d of ddlFor("sqlite")) await this.c.execute(d);
+    // One round trip: libsql batch() ships the whole idempotent DDL in a single request.
+    await this.c.batch([...ddlFor("sqlite")], "write");
   }
   async close(): Promise<void> {
     this.c.close();

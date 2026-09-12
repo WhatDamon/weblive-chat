@@ -65,7 +65,6 @@ async function main() {
       DB_PROVIDER: "sqlite",
       DATABASE_URL: `file:${dbPath}`,
       ADMIN_SECRET,
-      DB_MIGRATE_ON_BOOT: "true",
       ALLOWED_ORIGINS: "",
       REQUIRE_ORIGIN: "0",
     } as Record<string, string>,
@@ -90,7 +89,9 @@ async function main() {
     proc.on("exit", (code, sig) => {
       if (!outBuf.includes("http://localhost:"))
         reject(
-          new Error(`process exited early code=${code} sig=${sig}; stdout:\n${outBuf}`),
+          new Error(
+            `process exited early code=${code} sig=${sig}; stdout:\n${outBuf}`,
+          ),
         );
     });
   });

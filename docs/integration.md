@@ -464,6 +464,37 @@ const { bans } = await (await fetch("/api/admin/bans?limit=100", { credentials: 
 | **自托管（`bun start` / Node）** | 单进程长驻，连接可以一直不断；`DB_PROVIDER=memory` 时无持久化（仅本地演示，多实例不共享） |
 | **任意 CDN / 反代** | 若代理有 60s 空闲超时，`": ping"`（15s）足以保活；请确保**不缓冲** `text/event-stream`（关闭响应缓冲 / `X-Accel-Buffering: no`） |
 
+### 9.1 省服务端额度：不可见就断开（强烈建议）
+
+Vercel Hobby 档函数固定 **2 GB 内存且不可下调**，免费额度是 **360 GB-hr 内存时长/月**，按**实例存活**计——SSE 常连期间实例不会释放。折算下来只有 **180 实例小时**，而一个 7×24 常显的标签页是 720 小时/月，**单独一个就超 3 倍**。后台标签页占“常连页”的绝大多数，所以最划算的一步是：**页面不可见时主动断开，可见时重连并用历史接口补齐缺口**。内置 `/demo.html` 已这么做，接入方建议照搬：
+
+```js
+let ctrl = null;
+let paused = document.visibilityState === "hidden"; // 以隐藏状态打开就不建流
+
+document.addEventListener("visibilitychange", () => {
+  paused = document.visibilityState === "hidden";
+  if (paused) ctrl?.abort();                      // 释放连接 = 释放实例
+  else backfill();                                // 回来先把缺口补上，再重连
+});
+
+async function connect() {
+  while (true) {
+    if (paused) { await sleep(1000); continue; }
+    ctrl = new AbortController();
+    const res = await fetch(`/api/stream?since=${since}&client_id=${cid}`, { signal: ctrl.signal });
+    // ...读事件循环...
+  }
+}
+```
+
+补缺口时注意：历史接口会把「已删除」的消息以 `deleted:true, text:null` 返回，几已渲染过的条目要就地替换成删除占位（内置页的 `loadHistory(true)` 就是这么做的）。
+
+还有两档更省的做法：
+
+- **低频轮询（推荐给“几十人同时在线”的规模）**：不建流，每 30s 拉一次 `/api/messages?since=<本地最新 messages.id>`（成本约 0.03 GB-hr/小时，常连是 2 GB-hr/小时，差约两个数量级）。代价是没有 presence/`delete`/`notice` 实时事件，需自行轮询补齐。
+- **别把示例客户端常驻**：`examples/client.mjs` 是终端进程、没有“可见性”概念，挂着就是 2 GB-hr/小时。
+
 ---
 
 ## 10. 快速排查

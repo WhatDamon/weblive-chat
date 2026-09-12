@@ -30,6 +30,9 @@ function fakeRepo(over: Record<string, any> = {}) {
 
 const cfg = {
   pollMs: 2,
+  idlePollMs: 2,
+  idleAfterMs: 1_000_000,
+  eventProbeMs: 0,
   presenceUpsertMs: 2,
   presenceCountMs: 2,
   heartbeatMs: 1_000_000,
@@ -135,6 +138,9 @@ describe("runStream", () => {
       repo: f.repo,
       cfg: {
         pollMs: 2,
+        idlePollMs: 2,
+        idleAfterMs: 1_000_000,
+        eventProbeMs: 0,
         presenceUpsertMs: 2,
         presenceCountMs: 2,
         heartbeatMs: 30,
@@ -155,6 +161,9 @@ describe("runStream", () => {
       repo: f.repo,
       cfg: {
         pollMs: 2,
+        idlePollMs: 2,
+        idleAfterMs: 1_000_000,
+        eventProbeMs: 0,
         presenceUpsertMs: 1000,
         presenceCountMs: 1000,
         heartbeatMs: 1_000_000,
@@ -166,5 +175,66 @@ describe("runStream", () => {
     await sleep(12);
     ctrl.stop();
     expect(f.state.upserts).toBe(1); // Only the startup upsert: the cadence gate holds
+  });
+
+  test("events 已清理时的 maxId 探测受门控：空闲流不再每 tick 多一次查询", async () => {
+    const f = fakeRepo({ maxId: 7 });
+    let probes = 0;
+    f.repo.eventsMaxId = async () => {
+      probes++;
+      return 7;
+    };
+    const ctrl = runStream({
+      repo: f.repo,
+      cfg: { ...cfg, pollMs: 2, eventProbeMs: 10_000 },
+      clientId: "c1",
+      since: 100,
+      emit: () => {},
+    });
+    await sleep(40); // ~20 ticks
+    ctrl.stop();
+    expect(probes).toBe(1);
+  });
+
+  test("长时间无事件后退避到 idlePollMs（轮询次数明显下降）", async () => {
+    const f = fakeRepo();
+    let polls = 0;
+    f.repo.eventsSince = async () => {
+      polls++;
+      return [];
+    };
+    const ctrl = runStream({
+      repo: f.repo,
+      cfg: { ...cfg, pollMs: 2, idlePollMs: 1_000, idleAfterMs: 20 },
+      clientId: "c1",
+      emit: () => {},
+    });
+    await sleep(60);
+    ctrl.stop();
+    expect(polls).toBeLessThan(15); // polling every 2ms would be ~30
+  });
+
+  test("退避中的流仍能及时收到新事件（不会卡死）", async () => {
+    const events: any[] = [];
+    const f = fakeRepo({ events });
+    const out: [string, unknown][] = [];
+    const ctrl = runStream({
+      repo: f.repo,
+      cfg: { ...cfg, pollMs: 2, idlePollMs: 30, idleAfterMs: 5 },
+      clientId: "c1",
+      emit: (t, d) => out.push([t, d]),
+    });
+    await sleep(40); // idle by now: the stream has backed off
+    events.push({
+      id: 1,
+      type: "message",
+      payload: JSON.stringify({ id: "1", text: "hi" }),
+      created_at: 1,
+    });
+    await sleep(80);
+    ctrl.stop();
+    expect(out.some((o) => o[0] === "message" && (o[1] as any).id === "1")).toBe(
+      true,
+    );
   });
 });

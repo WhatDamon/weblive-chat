@@ -147,6 +147,7 @@ export const COPY = {
     statusConnecting: "连接中…",
     statusConnected: "已连接",
     statusReconnecting: "重连中…",
+    statusPaused: "已暂停（页面不可见）",
     statusConnectFailed: "连接失败：{msg}",
     statusBanned: "已被禁言",
     statusOriginDenied: "当前域名不可用",

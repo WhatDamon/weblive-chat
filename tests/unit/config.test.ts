@@ -5,11 +5,10 @@ import { loadConfig } from "../../src/lib/config";
 const base = { NODE_ENV: "test", ADMIN_SECRET: "s3cret" };
 
 describe("loadConfig", () => {
-  test("默认值：sqlite + file: 本地库、migrate 默认开、限额与保留参数", () => {
+  test("默认值：sqlite + file: 本地库、限额与保留参数", () => {
     const cfg = loadConfig({ ...base });
     expect(cfg.dbProvider).toBe("sqlite");
     expect(cfg.databaseUrl).toMatch(/^file:/);
-    expect(cfg.migrateOnBoot).toBe(true);
     expect(cfg.nickMax).toBe(24);
     expect(cfg.textMax).toBe(1000);
     expect(cfg.retentionDays).toBe(90);

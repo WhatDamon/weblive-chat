@@ -163,6 +163,9 @@ export function registerChat(app: Hono, d: ChatDeps) {
         repo,
         cfg: {
           pollMs: cfg.pollMs,
+          idlePollMs: cfg.idlePollMs,
+          idleAfterMs: cfg.idleAfterMs,
+          eventProbeMs: cfg.eventProbeMs,
           presenceUpsertMs: cfg.presenceUpsertMs,
           presenceCountMs: cfg.presenceCountMs,
           heartbeatMs: cfg.heartbeatMs,

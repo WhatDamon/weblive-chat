@@ -60,7 +60,6 @@ bun run dev                   # http://localhost:3000
 | `DB_PROVIDER` | `sqlite` | `sqlite` ｜ `postgres` ｜ `memory` |
 | `DATABASE_URL` | `file:./data/dev.db` | 见下「存储形态」；`postgres` 时必须为 `postgres://…`；`memory` 时忽略 |
 | `TURSO_AUTH_TOKEN` | 空 | 仅 Turso（`libsql://`）需要 |
-| `DB_MIGRATE_ON_BOOT` | `true` | 启动幂等建表（`CREATE TABLE IF NOT EXISTS`）；`"false"` 关闭 |
 | `ADMIN_SECRET` | 仅本地开发有内置回退值 | 管理后台口令；**生产（`NODE_ENV=production`）缺失即拒绝启动**，请设为长随机串 |
 | `NODE_ENV` | `development` | Vercel 自动设为 `production` |
 | `ALLOWED_ORIGINS` | 空（开放） | 逗号分隔精确 Origin，如 `https://a.com,http://localhost:3000`；一旦设置即白名单 fail-closed。写 `*` 等价于留空（全开），不会被当成字面量来源。⚠️ **设置时须把部署自身域名一并列入**（同源 `/demo.html`、`/admin` 页与同源前端，浏览器对 POST 必带 Origin），否则内置页面/同源应用的写请求会被 403 拒；**换域名后必须同步更新此变量**（改完需重新部署才生效） |
@@ -83,7 +82,7 @@ bun run dev                   # http://localhost:3000
 | `ADMIN_SESSION_DAYS` | `7` | 管理会话 Cookie 有效天数 |
 | `PORT` | `3000` | 本地开发服务器端口（Vercel 忽略） |
 
-> 内部固定常量（不可配）：presence TTL 45s、轮询 1s、心跳 15s、events 出站表保留 1h。
+> 内部固定常量（不可配）：presence TTL 45s、presence 写入 20s 一次、在线人数 5s 一算、活跃轮询 1s（静默 30s 后转 3s）、心跳 15s、events 出站表保留 1h。
 
 ### 违禁词过滤
 
@@ -143,6 +142,20 @@ turso db tokens create weblive-chat      # → 粘贴到 TURSO_AUTH_TOKEN
 Neon / Supabase / 自托管 Postgres：连接串形如 `postgres://…?sslmode=require`，`DB_PROVIDER=postgres` 即可。注意 Neon 免费档按 CU 小时计费——长连轮询会让 compute 全天候活跃，建议仅在低流量场景选用。
 
 平台时长提示：Vercel 函数单次最长 300s（Hobby 档；Pro/Enterprise 更高），SSE 流到点断开属**预期行为**——客户端携带 `since` 自动重连续传即可（内置页面已实现）。
+
+### Hobby 免费额度能撑多久
+
+Hobby 档函数**固定 2 GB 内存 / 1 vCPU（不可下调，`vercel.json` 设置内存只会在构建期告警）**，额度为 **360 GB-hr 内存时长 + 4 CPU-hr + 100 万次调用/月**。内存时长按**实例存活**计——SSE 常连期间实例不释放，所以 **360 GB-hr ÷ 2 GB = 180 实例小时**；而一个 7×24 常显标签页就要 720 小时/月，**单独一个就超 3 倍**。因此本项目按「少占实例时间」设计：
+
+| 措施 | 效果 |
+| --- | --- |
+| 页面不可见即断开 SSE（内置 `/demo.html` 已实现，接入方照做即可） | 后台标签页占用归零；恢复可见时带 `since` 重连并补历史 |
+| 静默 30s 后轮询 1s → 3s | 冷清房间的 DB 查询与 CPU 唤醒降约 2/3（首帧最坏延迟 3s） |
+| presence 写入 20s 一次（TTL 45s 不变） | Turso 免费写入额度下可支撑的在线人数翻倍 |
+| `MAX(events.id)` 回退探测 10s 一次 | 空闲连接由 2 次查询/秒降为 1 次/秒 |
+| 冷启动建表合并为一次往返（libsql `batch()`） | 每次实例冷启动少 6 次往返 |
+
+量级参考：常连按每 tick ≈1.5 ms CPU 计约 **1 CPU-hr/月/连接**（Hobby 共 4 CPU-hr）；30s 低频轮询按每次请求实例存活 0.5s 计约 **0.03 GB-hr/小时**，常连则是 **2 GB-hr/小时**。若你要几十个常显标签页同时在线，请改用低频轮询（`/api/messages?since=`）或升 Pro，详见 `docs/integration.md` §9。
 
 ## 文档
 
