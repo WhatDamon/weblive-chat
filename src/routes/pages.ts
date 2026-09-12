@@ -22,7 +22,7 @@ export function renderPage(html: string): string {
       TOKEN,
       (raw, path: string) =>
         lookupCopy(path) ??
-        (console.error(`[copy] 未定义的占位符：${raw}`), raw),
+        (console.error(`[copy] undefined placeholder: ${raw}`), raw),
     )
     .replace("<!--COPY-->", copyBootstrap());
 }

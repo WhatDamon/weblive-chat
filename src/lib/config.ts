@@ -53,7 +53,7 @@ const envInt = (
   if (v === undefined || v === "") return def;
   const n = Number(v);
   if (!Number.isFinite(n) || n < 0)
-    throw new Error(`环境变量 ${key} 必须是非负数字，收到 "${v}"`);
+    throw new Error(`Env ${key} must be a non-negative number, got "${v}"`);
   return Math.floor(n);
 };
 
@@ -63,21 +63,21 @@ export function loadConfig(
   const provider = env.DB_PROVIDER ?? "sqlite";
   if (provider !== "sqlite" && provider !== "postgres" && provider !== "memory")
     throw new Error(
-      `DB_PROVIDER 仅支持 sqlite|postgres|memory，收到 "${provider}"`,
+      `DB_PROVIDER must be sqlite|postgres|memory, got "${provider}"`,
     );
   const databaseUrl =
     env.DATABASE_URL ?? (provider === "sqlite" ? "file:./data/dev.db" : "");
   if (provider === "postgres" && !/^postgres(ql)?:\/\//.test(databaseUrl))
-    throw new Error("DB_PROVIDER=postgres 时必须提供 DATABASE_URL");
+    throw new Error("DB_PROVIDER=postgres requires DATABASE_URL");
   const envName = env.NODE_ENV ?? "development";
   // memory has no persistence and no cross-instance sharing, so serverless cannot use it.
   if (provider === "memory" && envName === "production")
     throw new Error(
-      "DB_PROVIDER=memory 不适用于生产/Vercel（无持久化、Serverless 无共享内存）；生产请配置 sqlite(Turso)/postgres",
+      "DB_PROVIDER=memory cannot run in production/Vercel (no persistence, no shared memory); use sqlite(Turso) or postgres",
     );
   const adminSecret = env.ADMIN_SECRET ?? "";
   if (envName === "production" && !adminSecret)
-    throw new Error("生产环境必须设置 ADMIN_SECRET");
+    throw new Error("ADMIN_SECRET is required in production");
   // Empty = open mode; "*" also means open, since treating it literally locks out every origin.
   const rawOrigins = (env.ALLOWED_ORIGINS ?? "")
     .split(",")
@@ -91,7 +91,7 @@ export function loadConfig(
     bannedWordsMode !== "strict"
   )
     throw new Error(
-      `BANNED_WORDS_MODE 仅支持 off|basic|strict，收到 "${bannedWordsMode}"`,
+      `BANNED_WORDS_MODE must be off|basic|strict, got "${bannedWordsMode}"`,
     );
   const rateWindowMs = 60_000;
   return {

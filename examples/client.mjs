@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const BASE = (process.argv[2] ?? "http://localhost:3000").replace(/\/+$/, "");
-const NICK = process.argv[3] ?? "示例客户端";
+const NICK = process.argv[3] ?? "example-client";
 const RECONNECT_MS = 1000; // keep >= 1s or reconnects trip the stream rate limit (20/min)
 const SEEN_MAX = 5000;
 const IDLE_MS = 45_000;
@@ -206,21 +206,23 @@ if (isDirectRun()) {
   const hhmmss = (v) => new Date(v).toLocaleTimeString();
   chat
     .on("message", (m) => out(`[${hhmmss(m.created_at)}] ${m.nick}: ${m.text}`))
-    .on("delete", (d) => out(`[系统] 消息 ${d.id} 已被删除`))
-    .on("presence", (p) => out(`[在线] ${p.online} 人`))
+    .on("delete", (d) => out(`[deleted] message ${d.id}`))
+    .on("presence", (p) => out(`[online] ${p.online}`))
     .on("notice", (n) =>
-      out(`[通知] 历史模式 ${n.mode}（保留 ${n.retention_days} 天）`),
+      out(`[notice] history mode ${n.mode} (retention ${n.retention_days}d)`),
     )
-    .on("ban", (b) => out(`[禁言] 本机已被禁言：${b.reason}`))
-    .on("error", (e) => out(`[错误] ${e.message ?? JSON.stringify(e)}`))
+    .on("ban", (b) => out(`[banned] this IP is muted: ${b.reason}`))
+    .on("error", (e) => out(`[error] ${e.message ?? JSON.stringify(e)}`))
     .start();
 
-  out(`已连接 ${BASE}\n身份 client_id=${chat.clientId}`);
+  out(`connected ${BASE}\nclient_id=${chat.clientId}`);
   await new Promise((r) => setTimeout(r, 1500));
   try {
-    await chat.send(`来自接入示例的消息 ${new Date().toLocaleTimeString()}`);
+    await chat.send(
+      `hello from the example client ${new Date().toLocaleTimeString()}`,
+    );
   } catch (err) {
-    out(`发送失败：[${err.code ?? "?"}] ${err.message}`);
+    out(`send failed: [${err.code ?? "?"}] ${err.message}`);
   }
   process.on("SIGINT", () => {
     chat.close();

@@ -38,19 +38,16 @@ export function validateMessageBody(
     return { ok: false, code: "invalid_uuid", field: "client_id" };
   const nick = typeof b.nick === "string" ? sanitizeText(b.nick) : "";
   const text = typeof b.text === "string" ? sanitizeText(b.text) : "";
-  if (!nick)
-    return { ok: false, code: "nick_empty", field: "nick" };
+  if (!nick) return { ok: false, code: "nick_empty", field: "nick" };
   if (nick.length > cfg.nickMax)
     return { ok: false, code: "nick_too_long", field: "nick" };
-  if (!text)
-    return { ok: false, code: "text_empty", field: "text" };
+  if (!text) return { ok: false, code: "text_empty", field: "text" };
   if (text.length > cfg.textMax)
     return { ok: false, code: "text_too_long", field: "text" };
   const matcher = cfg.filter ?? matcherFor(cfg.bannedWords);
   const textHit = matcher.scan(text) ? ("text" as const) : null;
   const hit = textHit ?? (matcher.scan(nick) ? ("nick" as const) : null);
-  if (hit)
-    return { ok: false, code: "banned_word", field: hit };
+  if (hit) return { ok: false, code: "banned_word", field: hit };
   return { ok: true, nick, text };
 }
 

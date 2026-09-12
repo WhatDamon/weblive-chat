@@ -75,7 +75,7 @@ async function main() {
   void proc.stderr?.on("data", (d) => process.stderr.write("[srv-err] " + d));
   const ready = new Promise<number>((resolve, reject) => {
     const timer = setTimeout(
-      () => reject(new Error("启动超时；stdout:\n" + outBuf)),
+      () => reject(new Error("startup timed out; stdout:\n" + outBuf)),
       20_000,
     );
     proc.stdout!.on("data", (d) => {
@@ -90,14 +90,14 @@ async function main() {
     proc.on("exit", (code, sig) => {
       if (!outBuf.includes("http://localhost:"))
         reject(
-          new Error(`进程提前退出 code=${code} sig=${sig}；stdout:\n${outBuf}`),
+          new Error(`process exited early code=${code} sig=${sig}; stdout:\n${outBuf}`),
         );
     });
   });
   const port = await ready;
   const base = `http://localhost:${port}`;
   console.log(
-    `[server ready] ${base}（ADMIN_SECRET 前缀 smoke-、库 ${dbPath}）`,
+    `[server ready] ${base} (ADMIN_SECRET prefix smoke-, db ${dbPath})`,
   );
   const h = (xff = XFF_A) => ({
     "content-type": "application/json",
@@ -356,8 +356,8 @@ async function main() {
     const lines = cliOut.split("\n").filter(Boolean);
     check(
       "示例客户端实跑：身份持久化 + 建流 + 发言回显",
-      cliOut.includes("身份 client_id=") &&
-        /冒烟: 来自接入示例的消息/.test(cliOut),
+      cliOut.includes("client_id=") &&
+        /冒烟: hello from the example client/.test(cliOut),
       lines.slice(0, 3).join(" | "),
     );
   }
@@ -390,20 +390,20 @@ async function main() {
 
   rmSync(tmp, { recursive: true, force: true });
   console.log(
-    fails === 0 ? "\n=== E2E 全部通过 ===" : `\n=== E2E 失败 ${fails} 项 ===`,
+    fails === 0 ? "\n=== E2E passed ===" : `\n=== E2E failed: ${fails} ===`,
   );
   process.exit(fails === 0 ? 0 : 1);
 }
 
 main().catch(async (e) => {
-  console.error("E2E 异常：", e);
+  console.error("E2E error:", e);
   // Error path: kill the child and remove the temp DB.
   await stopServer().catch(() => {});
   try {
     rmSync(tmp, { recursive: true, force: true });
   } catch (err) {
     // Best-effort: cleanup must never mask the original error.
-    console.error("清理临时目录失败（忽略）：", err);
+    console.error("temp dir cleanup failed (ignored):", err);
   }
   process.exit(2);
 });

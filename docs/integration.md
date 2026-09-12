@@ -48,11 +48,11 @@ bun examples/client.mjs https://your-app.vercel.app 我的昵称
 输出形如：
 
 ```text
-已连接 https://your-app.vercel.app
-身份 client_id=3f2b…（首次运行生成并缓存）
-[在线] 3 人
+connected https://your-app.vercel.app
+client_id=3f2b…（首次运行生成并在本地缓存）
+[online] 3
 [8:10:24 PM] 甲: 你好
-[8:10:27 PM] 我的昵称: 来自接入示例的消息 8:10:27 PM
+[8:10:27 PM] 我的昵称: hello from the example client 8:10:27 PM
 ```
 
 `examples/client.mjs` 已经包含本文所有要点（身份持久化、SSE 解析、断线重连、补历史、去重、看门狗），

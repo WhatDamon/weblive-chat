@@ -49,7 +49,7 @@ export function createApp(deps: AppDeps): Hono {
         extra: cfg.bannedWords,
         allow: cfg.bannedWordsAllow,
       }).catch((err) => {
-        console.error("[wordfilter] 词库装载失败，已退化为仅显式词：", err);
+        console.error("[wordfilter] wordlist load failed, using explicit words only:", err);
         return buildWordFilter(cfg.bannedWords, cfg.bannedWordsAllow);
       });
     }

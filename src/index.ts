@@ -17,7 +17,7 @@ if (import.meta.main) {
    // Bun rejects idleTimeout > 255; SSE is kept alive by the heartbeat, this is a backstop.
    idleTimeout: 255,
   });
-  console.log(`WebLive Chat 已启动 → http://localhost:${server.port}/`);
+  console.log(`WebLive Chat listening on http://localhost:${server.port}/`);
  });
 }
 

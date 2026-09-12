@@ -96,7 +96,7 @@ async function readWordDir(dir: string): Promise<string[]> {
     files = await readdir(dir);
   } catch {
     // A missing wordlist dir is non-fatal (explicit words still apply) but must be logged loudly.
-    console.error(`[wordfilter] 词库目录不可读，已跳过：${dir}`);
+    console.error(`[wordfilter] wordlist dir unreadable, skipped: ${dir}`);
     return [];
   }
   const out: string[] = [];
