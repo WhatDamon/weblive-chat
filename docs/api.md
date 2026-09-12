@@ -56,7 +56,7 @@
 - 实时性：房间活跃时下行延迟 ≤1s；静默 30s 后服务端把轮询退避到 3s（省函数实例时长），此时首帧最坏延迟约 3s，后续事件回到 1s。
 - 客户端流程：开流（`since=0` 或上次游标）→ 历史/gap-sync 走 `/api/messages?since=` → 事件按消息 `id` 去重。
 - **回退规则**（服务端自动）：若 `since` 落后于 events 保留期（旧游标空转），把游标重置为当前最大 `events.id` 并从该处继续；**缺口用 `/api/messages?since=<本地最新 messages.id>` 补齐**。
-- 断线重连由客户端负责：Vercel 函数单次最长 300s，到点断流是预期行为，携带 `since` 重连即可。
+- 断线重连由客户端负责：函数单次运行时长由 `vercel.json` 的 `maxDuration` 决定（当前 300s），到点断流是预期行为，携带 `since` 重连即可。
 
 ## 2. 管理端点（需会话 Cookie `wl_admin`）
 
@@ -130,7 +130,7 @@
 | 403 | `missing_origin` | `REQUIRE_ORIGIN=1` 下请求未带 Origin |
 | 404 | `not_found` | 解封不存在 / 删不存在的消息 |
 | 429 | `rate_limited` | 超限（附 `retry_after_ms`） |
-| 503 | `db_unavailable` | 存储不可用/冻结（含 Neon 冻结语义） |
+| 503 | `db_unavailable` | 存储不可用（数据库拒写或连不上，如额度耗尽）；稍后重试 |
 | 500 | — | 未预期服务端错误 |
 
 ## 5. curl 示例

@@ -32,7 +32,7 @@
 
 | # | 决策 | 理由 |
 |---|------|------|
-| D1 | 持久化由 **`DB_PROVIDER`（sqlite \| postgres）显式选择**，配 `DATABASE_URL`：SQLite 系 = 本地 `file:`（开发/测试）或远程 Turso（生产）；Postgres 系 = 任意实例（Neon / Supabase / 自托管）。默认 `sqlite` + Turso | 目标"手动自选 SQLite/PostgreSQL"= 配置切换而非代码分叉；见 §4.1 矩阵与 §7.3；Turso 免费档无 CU 时间计费，Neon 有（§7.1） |
+| D1 | 持久化由 **`DB_PROVIDER`（sqlite \| postgres）显式选择**，配 `DATABASE_URL`：SQLite 系 = 本地 `file:`（开发/测试）或远程 Turso（生产）；Postgres 系 = 任意实例（Neon / Supabase / 自托管）。默认 `sqlite` + Turso | 目标"手动自选 SQLite/PostgreSQL"= 配置切换而非代码分叉；见 §4.1 矩阵与 §7.3；Turso 免费档无 CU 时间计费，Neon 有（§7.1，套餐数字核对于 2026-09-12） |
 | D2 | **免登录**：客户端自持 `client_id`（UUID，无账号）；**管理员**：`ADMIN_SECRET` 口令换 HttpOnly 签名 Cookie（无状态，不落库） | 普通用户零摩擦；"保证有管理员"由**部署者配置**保证，仓库零敏感数据 |
 | D3 | 实时通道 **SSE + POST**（事件流 `since` 游标自动续传；上行普通 POST） | Vercel 免费计划上 WS/SSE 都受函数时长上限约束，SSE 契约最干净、平台耦合最低；未来可把总线替换为 Redis/Ably 而**不改客户端契约** |
 | D4 | 跨实例广播用 **Turso 作为总线**：`events` 出站表（outbox），每个事件流每秒轮询增量 | Serverless 无共享内存；轮询在 Turso 只计"行读取"、无 CU 时间炸弹；以 ~1 qps/流 的读放大换取零额外基础设施；负载路径见 §7 |
@@ -252,6 +252,8 @@ Cookie 安全：`HttpOnly; SameSite=Lax; Secure`（生产）；`ADMIN_SECRET` �
 > **v0.1 修正**：初稿默认 Neon 并称"50 并发可承受"——**未计入 Neon 的 CU（compute 活跃小时）计费**。SSE 轮询会让 compute 7×24 活跃（≈720 CU-h/月，免费仅 ~100），持续在线几周即被**冻结到下个账单周期**。故默认存储改为 Turso（按读/写行数计费、空闲零成本），Neon 保留为可选 provider。
 >
 > **v0.2 修正（平台侧额度）**：v0.1 只核算了数据库额度，漏了 **Vercel 函数自身**的额度。Hobby 档函数**固定 2 GB / 1 vCPU 且不可下调**（`vercel.json` 也无法设置，设了只会在构建期告警），额度为 **360 GB-hr 内存时长 + 4 CPU-hr + 100 万次调用/月**。Provisioned Memory 从实例启动计到**最后一个在途请求结束**，即 **SSE 常连 = 实例不释放**；折合 **360/2 = 180 实例小时**，而一个 7×24 常显标签页 = 720 小时/月——**单个常连页面就超 3 倍**。故 v0.2 的优化重心是"缩短实例占用时长"（§7.4），而不只是看 DB。
+>
+> **时效**：本章（§7.1–§7.4）的平台套餐数字（Vercel 与各 provider）核对于 **2026-09-12**，来源为各家官方文档（Vercel：[Limits](https://vercel.com/docs/limits) / [Pricing](https://vercel.com/pricing)）。平台调整后需重新核对并更新此日期，不要把本章数字当成长期常量。
 
 ### 7.1 配额语义与预算数学
 
@@ -298,7 +300,7 @@ Cookie 安全：`HttpOnly; SameSite=Lax; Secure`（生产）；`ADMIN_SECRET` �
 
 ### 7.4 Vercel 函数侧的省额度设计（v0.2）
 
-> 计费口径（官方）：Provisioned Memory 按**实例存活且仍有在途请求**计，计到最后一个在途请求结束；实例空闲被冻结、不计费。因此**一条 SSE 常连 = 实例持续计费**，而请求间隙（实例冻结）不计。Hobby 固定 2 GB/1 vCPU 不可下调，故 **360 GB-hr ÷ 2 GB = 180 实例小时/月**。
+> 计费口径（官方，2026-09-12 核对）：Provisioned Memory 按**实例存活且仍有在途请求**计，计到最后一个在途请求结束；实例空闲被冻结、不计费。因此**一条 SSE 常连 = 实例持续计费**，而请求间隙（实例冻结）不计。Hobby 固定 2 GB/1 vCPU 不可下调，故 **360 GB-hr ÷ 2 GB = 180 实例小时/月**。
 >
 > **先撞墙的是内存，不是 CPU**：常连按每 tick ≈1.5 ms CPU 计约 1 CPU-hr/月/连接（4 CPU-hr ≈ 4 条常连），而内存只够**一条常连跑 7.5 天**——**内存比 CPU 紧约 15 倍**。结论：优化重心是"少占实例时间"，而不是微调查询次数；DB 额度（Turso 5 亿行读/1000 万行写）根本不是瓶颈。
 
@@ -350,7 +352,7 @@ tests/                # bun test（单元为主）
 
 ## 10. 上线前需实测的运行时细节（非契约）
 
-- SSE 在 Vercel 实测：官方文档 Hobby 默认/最大时长均 300s（fluid compute），验证空闲不提前断流、断点重连与 presence TTL 衔接。
+- SSE 在 Vercel 实测：官方文档 Hobby 默认/最大时长均 300s（fluid compute，2026-09-12 核对），验证空闲不提前断流、断点重连与 presence TTL 衔接。
 - 单函数部署形态实测：`src/index.ts` 默认导出 **Web handler 对象 `{ fetch(request) }`**（Vercel Node 运行时唯一接受的三种形态之一：`{ fetch }` / 具名 `GET|POST…` / 自带 `.fetch` 的框架实例）承接全部路由，`vercel.json` 用 `builds` + `@vercel/node`；本地 Bun.serve 同进程跑同一 app。
   - ⚠️ **入口导出形态**：必须是带 `fetch` 方法的对象（Vercel Node 运行时的 Web handler 约定）；裸函数导出会被当作旧式 `(req, res)` 处理器，响应永不下发（整站挂起至函数超时）。护栏见 `tests/integration/vercel-entry.test.ts`。
   - 模块顶层**不得出现 top-level await**（`@vercel/node` 产物可能转 CJS）；dev 入口改用 `void buildApp().then(...)`。

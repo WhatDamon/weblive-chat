@@ -193,7 +193,7 @@ async function send(text, nick = "路人") {
 
 ### 3.3 连接一定会断，这是设计的一部分
 
-服务端跑在 Serverless 函数上（Vercel），**每个 SSE 连接的生命周期受函数最大执行时长约束**——Hobby/Pro 默认与上限均为 300s（Pro 可配到 800s），到点连接即结束；此外中间代理、移动网络切换也会断。
+服务端跑在 Serverless 函数上（Vercel），**每个 SSE 连接的生命周期受函数最大执行时长约束**——本项目 `vercel.json` 配为 300s，到点连接即结束（各档位上限见 [官方文档](https://vercel.com/docs/functions/configuring-functions/duration)，2026-09-12 核对）；此外中间代理、移动网络切换也会断。
 
 因此客户端契约是：
 
@@ -461,9 +461,11 @@ const { bans } = await (await fetch("/api/admin/bans?limit=100", { credentials: 
 
 | 形态 | 对客户端的影响 |
 |---|---|
-| **Vercel（推荐）** | 每请求可能命中不同函数实例，但实例间通过数据库广播，客户端无感；SSE 连接最长存活到函数时限（默认 300s）→ **自动重连是硬要求**；冷启动首个请求可能慢一两百毫秒 |
+| **Vercel（推荐）** | 每请求可能命中不同函数实例，但实例间通过数据库广播，客户端无感；SSE 连接最长存活到函数时限（本项目 `maxDuration: 300s`）→ **自动重连是硬要求**；冷启动首个请求可能慢一两百毫秒 |
 | **自托管（`bun start` / Node）** | 单进程长驻，连接可以一直不断；`DB_PROVIDER=memory` 时无持久化（仅本地演示，多实例不共享） |
 | **任意 CDN / 反代** | 若代理有 60s 空闲超时，`": ping"`（15s）足以保活；请确保**不缓冲** `text/event-stream`（关闭响应缓冲 / `X-Accel-Buffering: no`） |
+
+> **时效**：本节与 §9.1 涉及的平台行为与数字（函数时长上限、实例计费语义、档位额度）核对于 **2026-09-12**，来源 Vercel 官方 [Limits](https://vercel.com/docs/limits) / [Fluid Compute](https://vercel.com/docs/fluid-compute)；平台调整后以官方为准。
 
 ### 9.1 省服务端额度：不可见就断开（强烈建议）
 

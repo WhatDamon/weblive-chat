@@ -85,6 +85,7 @@ turso db tokens create weblive-chat   # → TURSO_AUTH_TOKEN
 - **`x-forwarded-for` 取首跳**：只有直连 Vercel（该头由平台注入、不可伪造）时才可信；前置了 CDN 需自行调整。
 - **历史即公开存档**：免登录设计下任何人都能翻阅历史；可用 `HISTORY_MAX_BACKFILL` 限制回溯深度。
 - **合规**：IP 属个人数据，封禁表会留存被封 IP 与原因，部署前请确认用途符合当地法规。
+- **平台说明的时效**：文中涉平台行为与限额的表述（函数文件系统为临时、`x-forwarded-for` 由平台注入、单次运行时长上限）核对于 **2026-09-12**；平台调整后以官方文档为准。
 
 ## License
 
