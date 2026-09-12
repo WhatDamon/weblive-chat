@@ -20,7 +20,6 @@ export type MsgErr =
         | "text_too_long"
         | "banned_word";
       field: string;
-      message: string;
     }
   | { ok: true; nick: string; text: string };
 
@@ -36,52 +35,22 @@ export function validateMessageBody(
   const b = (body ?? {}) as Record<string, unknown>;
   const client_id = typeof b.client_id === "string" ? b.client_id : "";
   if (!validUuid(client_id))
-    return {
-      ok: false,
-      code: "invalid_uuid",
-      field: "client_id",
-      message: "client_id 必须是合法 UUID",
-    };
+    return { ok: false, code: "invalid_uuid", field: "client_id" };
   const nick = typeof b.nick === "string" ? sanitizeText(b.nick) : "";
   const text = typeof b.text === "string" ? sanitizeText(b.text) : "";
   if (!nick)
-    return {
-      ok: false,
-      code: "nick_empty",
-      field: "nick",
-      message: "昵称不能为空",
-    };
+    return { ok: false, code: "nick_empty", field: "nick" };
   if (nick.length > cfg.nickMax)
-    return {
-      ok: false,
-      code: "nick_too_long",
-      field: "nick",
-      message: `昵称最长 ${cfg.nickMax} 字`,
-    };
+    return { ok: false, code: "nick_too_long", field: "nick" };
   if (!text)
-    return {
-      ok: false,
-      code: "text_empty",
-      field: "text",
-      message: "内容不能为空",
-    };
+    return { ok: false, code: "text_empty", field: "text" };
   if (text.length > cfg.textMax)
-    return {
-      ok: false,
-      code: "text_too_long",
-      field: "text",
-      message: `内容最长 ${cfg.textMax} 字`,
-    };
+    return { ok: false, code: "text_too_long", field: "text" };
   const matcher = cfg.filter ?? matcherFor(cfg.bannedWords);
   const textHit = matcher.scan(text) ? ("text" as const) : null;
   const hit = textHit ?? (matcher.scan(nick) ? ("nick" as const) : null);
   if (hit)
-    return {
-      ok: false,
-      code: "banned_word",
-      field: hit,
-      message: "内容含违禁词",
-    };
+    return { ok: false, code: "banned_word", field: hit };
   return { ok: true, nick, text };
 }
 
