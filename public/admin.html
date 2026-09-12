@@ -148,7 +148,6 @@ async function refreshAll() {
   refreshMsgs();
 }
 
-// Retention mode wording for operators (server enum is not shown verbatim).
 const RETENTION_NOTE = { degraded_retention: COPY.admin.historyDegraded };
 
 async function refreshStats() {
@@ -255,12 +254,11 @@ const TABLE_LABEL = {
 };
 const tableItem = (t, n) => fill(COPY.admin.tableItem, { label: TABLE_LABEL[t], n });
 
-// ---- Danger zone: purge (two-phase, multi-step verification) ----
 let purgeToken = null, purgePhrase = "", purgeScope = "chat", purgeReadyAt = 0, purgeTick = null;
 
 const purgeScopeVal = () => document.querySelector('input[name="pScope"]:checked').value;
 
-/** Reset: drop token and inputs (any failure, scope switch or expiry requires a new preview). */
+/** Any reset invalidates the preview token */
 function purgeReset(hint) {
   purgeToken = null;
   purgeReadyAt = 0;
@@ -288,7 +286,7 @@ $("pPreviewBtn").onclick = async () => {
     $("pSummary").textContent = fill(COPY.admin.purgeSummary, { del, keep: keep || COPY.admin.purgeKeepNone });
     $("pPhrase").textContent = p.confirm_phrase;
     $("pRun").style.display = "block";
-    // UI delay: the confirm button unlocks after 3s, and the token TTL is tracked meanwhile.
+    // confirm unlocks after 3s; the token TTL is tracked meanwhile
     purgeReadyAt = Date.now() + 3000;
     $("pGoBtn").disabled = true;
     if (purgeTick) clearInterval(purgeTick);

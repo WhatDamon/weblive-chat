@@ -20,16 +20,13 @@ export interface StreamOpts {
   repo: StreamRepo;
   cfg: StreamCfg;
   clientId: string;
-  /** 起始游标：缺省 0（从头开始增量）。 */
   since?: number;
   emit: (type: string, data: unknown) => void;
-  /** 心跳注释行写入口：缺省 no-op（无需保活时可省略）。 */
   emitComment?: (text: string) => void;
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-/** 返回控制柄：start() 进入循环（异步），stop() 请求停止。 */
 export function runStream(o: StreamOpts): { stop: () => void } {
   let stopped = false;
   let since = o.since ?? 0;
@@ -42,7 +39,7 @@ export function runStream(o: StreamOpts): { stop: () => void } {
   const tickPoll = async () => {
     let rows = await o.repo.eventsSince(since, 100);
     if (rows.length === 0 && since > 0) {
-      // 游标回退：events 已被清理（旧游标落后于保留期）→ 重置到当前 max 后继续
+      // Cursor fallback: events behind the cursor were already purged, so restart from max id.
       const maxId = await o.repo.eventsMaxId();
       if (since > maxId) since = Math.max(maxId, 0);
       rows = await o.repo.eventsSince(since, 100);
@@ -59,10 +56,10 @@ export function runStream(o: StreamOpts): { stop: () => void } {
       o.emit(e.type, data);
       pushed++;
     }
-    // 保活记时：仅实际推出事件时刷新；空转轮询不刷 → 空闲超 heartbeatMs 心跳分支才触发
+    // lastSent only advances on real writes, so an idle stream still reaches the heartbeat.
     if (pushed > 0) lastSent = Date.now();
   };
-  // 时间门控：upsert/COUNT 按各自节拍（cfg.presenceUpsertMs / countMs）执行，轮询 tick 只负责 pollMs
+  // Rate-gate presence writes and counts: at 1s ticks they would blow the DB write budget.
   const tickUpsert = async () => {
     const now = Date.now();
     if (now - lastUpsert < o.cfg.presenceUpsertMs) return;
@@ -77,7 +74,7 @@ export function runStream(o: StreamOpts): { stop: () => void } {
     if (online !== lastOnline) {
       lastOnline = online;
       o.emit("presence", { online });
-      lastSent = Date.now(); // presence 是实际写出，同样刷新保活记时
+      lastSent = Date.now();
     }
   };
 
@@ -85,27 +82,26 @@ export function runStream(o: StreamOpts): { stop: () => void } {
     if (o.cfg.ip) {
       const ban = await o.repo.banGet(o.cfg.ip);
       if (ban) {
-        o.emit("ban", { reason: ban.reason }); // 禁言提示，流保持打开
+        o.emit("ban", { reason: ban.reason }); // mute-only: keep the stream open
         lastSent = Date.now();
       }
     }
     await tickUpsert();
     await tickCount();
-    lastUpsert = Date.now(); // 初始心跳记时，避免下一 tick 立即重复
+    lastUpsert = Date.now();
     lastCount = lastUpsert;
     while (!stopped) {
       const cycleStart = Date.now();
       await tickPoll();
       if (stopped) break;
       await tickUpsert();
-      // 空闲保活：仅当距上次实际写出 ≥ heartbeatMs 才发 ": ping" 注释（lastSent 只在写出时刷新）
       if (Date.now() - lastSent >= o.cfg.heartbeatMs) {
         emitComment("ping");
         lastSent = Date.now();
       }
       await tickCount();
       const elapsed = Date.now() - cycleStart;
-      await sleep(Math.max(o.cfg.pollMs - elapsed, 0)); // 对齐 tick，防 async 堆积
+      await sleep(Math.max(o.cfg.pollMs - elapsed, 0)); // keep ticks aligned
     }
   })().catch((err) => {
     o.emit("error", { code: "db_unavailable", message: String(err) });

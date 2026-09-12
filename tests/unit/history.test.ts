@@ -34,13 +34,12 @@ describe("decideHistory", () => {
     expect(decideHistory({ retained: 100 }, cfg).mode).toBe("full");
   });
   test("cfg.retentionDays 低于阶梯首档时永不反向升档（Math.min 保护）", () => {
-    // 基线 7 天 < 首档 30：占比 ≥50% 也不得把保留期拉长到 30 → 保持基线 full
+    // Baseline below the first ladder step must never lengthen retention.
     const r1 = decideHistory(
       { retained: 600 },
       { retentionDays: 7, maxRows: 1000 },
     );
     expect(r1).toEqual({ mode: "full", retentionDays: 7 });
-    // 基线 45 天（介于 30 与 90 之间）：命中 0.5 档仍应收缩到 30
     const r2 = decideHistory(
       { retained: 600 },
       { retentionDays: 45, maxRows: 1000 },
@@ -51,10 +50,10 @@ describe("decideHistory", () => {
 
 describe("performMaintenance", () => {
   test("四阶段顺序：清理→档位删超龄→超行数裁剪→重算档位", async () => {
-    const T = 1_800_000_000_000; // 固定 now，便于断言裁剪 cutoff
+    const T = 1_800_000_000_000; // Fixed now so the cutoff assertion is deterministic
     const DAY = 86_400_000;
     const order: string[] = [];
-    const statsSeq = [5, 5, 2]; // messageStats 序列：初始 → 删超龄后(仍超上限) → trim 后
+    const statsSeq = [5, 5, 2]; // initial → after age-delete (still over cap) → after trim
     let i = 0;
     let dayCutoff = 0;
     let floor = 0;
@@ -84,7 +83,7 @@ describe("performMaintenance", () => {
       },
       historyBefore: async () => {
         order.push("historyBefore");
-        return [{ id: 102 }, { id: 101 }, { id: 100 }]; // 排序约定 id DESC（最新在前）
+        return [{ id: 102 }, { id: 101 }, { id: 100 }]; // Contract: id DESC (newest first)
       },
       trimMessagesBelow: async (f: number) => {
         order.push("trimMessagesBelow");
@@ -116,8 +115,8 @@ describe("performMaintenance", () => {
       "trimMessagesBelow",
       "messageStats",
     ]);
-    expect(dayCutoff).toBe(T - DAY); // 初始 retained≥maxRows → ephemeral 档 1 天
-    expect(floor).toBe(100); // 第 3 新（DESC 最新在前 → 末位为最旧保留）
+    expect(dayCutoff).toBe(T - DAY); // retained >= maxRows initially → 1-day tier
+    expect(floor).toBe(100); // 3rd newest id = oldest row kept
     expect(res).toEqual({
       mode: "degraded_retention",
       retentionDays: 30,

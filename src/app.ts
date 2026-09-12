@@ -21,7 +21,7 @@ export interface AppDeps {
 export function createApp(deps: AppDeps): Hono {
   const { cfg, repo } = deps;
   const history = newHistoryState();
-  // HISTORY_RETENTION_DAYS 播种：/api/meta 首次维护前即回报正确 retention_days（不干扰 notice 的 mode 判定）
+  // Seed before the first maintenance so /api/meta reports the configured retention.
   history.retentionDays = cfg.retentionDays;
   let booted: Promise<void> | null = null;
   const boot = async (): Promise<void> => {
@@ -30,9 +30,7 @@ export function createApp(deps: AppDeps): Hono {
         try {
           if (cfg.migrateOnBoot) await repo.bootstrap();
         } catch (err) {
-          // bootstrap 失败不缓存 rejected promise（勿用 ??= 永久记忆失败）：
-          // 同实例下 DB 恢复后下一请求自动重试 bootstrap（DDL 幂等，自愈）；
-          // 并发双跑无害（CREATE TABLE IF NOT EXISTS），失败统一由中间件映射 503。
+          // Don't cache a rejected bootstrap; the next request retries (DDL is idempotent).
           booted = null;
           throw err;
         }
@@ -41,8 +39,7 @@ export function createApp(deps: AppDeps): Hono {
   };
   const app = new Hono();
 
-  // 词库懒加载（memoized）：仅首次发言请求触发磁盘读取，不在冷启动/静态页路径上付费。
-  // 装载失败退化为「仅显式词」而非让请求失败——过滤降级不应拖垮发消息链路。
+  // Lazy wordlist load; on failure degrade to explicit words instead of failing the request.
   let filterPromise: Promise<WordFilter> | null = null;
   const getFilter = (): Promise<WordFilter> => {
     if (!filterPromise) {
@@ -59,8 +56,7 @@ export function createApp(deps: AppDeps): Hono {
     return filterPromise;
   };
 
-  // 惰性 boot（冷启动幂等）+ 每请求快路径；bootstrap 异常统一 503 信封
-  // （存储不可用不得泄漏为默认 500）
+  // Bootstrap failure maps to 503 so a storage outage never surfaces as a bare 500.
   app.use("*", async (c, next) => {
     try {
       await boot();
@@ -70,7 +66,6 @@ export function createApp(deps: AppDeps): Hono {
     await next();
   });
 
-  // /api 中间件：Origin 闸口 + CORS 响应头
   app.use("/api/*", async (c, next) => {
     const origin = c.req.header("origin");
     const cls = classifyOrigin(origin, cfg.allowedOrigins, cfg.requireOrigin);
@@ -80,7 +75,7 @@ export function createApp(deps: AppDeps): Hono {
       c.header("access-control-allow-origin", cls.origin);
       c.header("vary", "Origin");
     } else if (cls.mode === "denied") {
-      // 带上实际来源与已配置数量：换域名后忘了同步 ALLOWED_ORIGINS 时能直接定位
+      // Echo the received origin and allowlist size so a stale allowlist is diagnosable.
       return jsonError(c, 403, cls.code, {
         ...(origin ? { origin: normalizeOrigin(origin).slice(0, 256) } : {}),
         allowed_origins_count: cfg.allowedOrigins.length,
@@ -95,8 +90,7 @@ export function createApp(deps: AppDeps): Hono {
     await next();
   });
 
-  // 维护：每 maintenanceEvery 次写触发一次过期清理与档位评估；档位变化广播 notice
-  // （chat 与 admin 共用同一维护闭包与 history 状态，保持档位/计数单一来源）
+  // Shared by chat and admin so history mode and write counts have one source of truth.
   const maintain = async (now = Date.now()) => {
     history.writeCount += 1;
     if (history.writeCount % cfg.maintenanceEvery !== 0)
@@ -127,18 +121,13 @@ export function createApp(deps: AppDeps): Hono {
   };
 
   registerChat(app, { cfg, repo, history, maintain, getFilter });
-  // 管理 JSON API（HMAC Cookie 会话；Origin 闸口由 /api/* 中间件统一覆盖）
+  // Admin routes rely on the /api/* middleware for the origin gate and CORS headers.
   registerAdmin(app, { cfg, repo, history, maintain });
-  // 同源静态页（零构建 admin.html / demo.html）
   registerPages(app);
   return app;
 }
 
-/**
- * 生产组装（读真实环境变量：本地由 Bun 自动加载 .env，Vercel 由平台注入）。
- * 两个入口共用：loadConfig 只读传入的 env（不隐式读 process.env），
- * 因此此处必须显式传入，否则服务将忽略全部环境变量。
- */
+/** Production wiring; `env` must be passed explicitly or every env var is ignored. */
 export async function buildApp(
   env: Record<string, string | undefined> = process.env as Record<
     string,

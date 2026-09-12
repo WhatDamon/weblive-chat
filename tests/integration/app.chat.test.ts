@@ -54,7 +54,7 @@ describe("chat 公开端点", () => {
       nick: "甲",
       text: "第2条",
     });
-    expect(typeof lb.messages[0].created_at).toBe("string"); // ISO
+    expect(typeof lb.messages[0].created_at).toBe("string"); // ISO 8601
     const gap = await app.request(`/api/messages?since=${a.id}`);
     const gb = await gap.json();
     expect(gb.messages.map((m: any) => m.id)).toEqual([b.id]);
@@ -119,12 +119,12 @@ describe("chat 公开端点", () => {
         },
         body: JSON.stringify({ client_id: UUID, nick: "甲", text }),
       });
-    // 归一化绕过（全角/空格插空）同样命中
+    // the space-split variant must be caught by normalization
     const res = await send("这里出现测试违禁词A了呢");
     expect(res.status).toBe(400);
     const raw = await res.text();
     expect(JSON.parse(raw).error.code).toBe("banned_word");
-    expect(raw).not.toContain("测试违禁词A"); // 不回显命中词，避免被当成绕过字典
+    expect(raw).not.toContain("测试违禁词A"); // the matched word must not be echoed
     expect((await send("测试违禁词 A")).status).toBe(400);
     expect((await send("正常内容")).status).toBe(201);
     rmSync(dir, { recursive: true, force: true });
@@ -162,7 +162,7 @@ describe("chat 公开端点", () => {
     }
     const res = await app.request("/api/messages?limit=50");
     const body = await res.json();
-    expect(body.messages.length).toBe(2); // 只回最近 2 条（新→旧）
+    expect(body.messages.length).toBe(2); // newest first, capped at 2
     expect(body.mode).toBeDefined();
   });
 
@@ -183,7 +183,7 @@ describe("chat 公开端点", () => {
     });
     expect(bad.status).toBe(403);
     expect((await bad.json()).error.code).toBe("origin_not_allowed");
-    const none = await locked.app.request("/api/meta"); // 无 Origin 默认放行
+    const none = await locked.app.request("/api/meta");
     expect(none.status).toBe(200);
   });
 
@@ -195,13 +195,15 @@ describe("chat 公开端点", () => {
     expect(bad.status).toBe(403);
     const body = await bad.json();
     expect(body.error.code).toBe("origin_not_allowed");
-    // 回显归一化后的实际来源：排查「为什么被拒」时不必再猜是哪个域名/哪个变量
+    // echoes the normalized origin so a rejection can be traced
     expect(body.error.origin).toBe("https://evil.com");
     expect(body.error.allowed_origins_count).toBe(1);
 
     const lockedMeta = await (await locked.app.request("/api/meta")).json();
     expect(lockedMeta.origin_mode).toBe("locked");
-    const openMeta = await (await (await boot()).app.request("/api/meta")).json();
+    const openMeta = await (
+      await (await boot()).app.request("/api/meta")
+    ).json();
     expect(openMeta.origin_mode).toBe("open");
   });
 
@@ -220,14 +222,14 @@ describe("chat 公开端点", () => {
       const r = await send();
       expect(r.status).toBe(201);
     }
-    const r5 = await send(); // 第 5 条：ephemeral，不落 messages、仅 events
+    const r5 = await send(); // 5th write hits the row cap: events only
     expect(r5.status).toBe(201);
     const hist = await (await app.request("/api/messages?limit=10")).json();
     expect(hist).toMatchObject({ messages: [], mode: "ephemeral" });
     const stats = await repo.messageStats();
     expect(stats.total).toBe(4);
     const evs = await repo.eventsSince(0, 100);
-    expect(evs.some((e) => e.type === "notice")).toBe(true); // history_mode 广播
+    expect(evs.some((e) => e.type === "notice")).toBe(true); // history_mode notice
     const msgEvs = evs.filter((e) => e.type === "message");
     expect(
       JSON.parse(msgEvs[msgEvs.length - 1].payload).id.startsWith("e"),
@@ -259,7 +261,7 @@ describe("chat 公开端点", () => {
     });
     expect(res1.status).toBe(503);
     expect((await res1.json()).error.code).toBe("db_unavailable");
-    repo.bootstrap = orig; // DB 恢复
+    repo.bootstrap = orig;
     const res2 = await app.request("/api/meta", {
       headers: { "x-forwarded-for": "9.9.9.9" },
     });
@@ -277,7 +279,7 @@ describe("SSE 事件流", () => {
     });
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/event-stream");
-    // 另开同 client_id 连接：presence 按 client_id 去重，多标签并发不破坏计数
+    // second connection reuses client_id: presence dedupes per client
     const res2 = await app.request(`/api/stream?client_id=${UUID}`, {
       headers: { "x-forwarded-for": "2.2.2.2" },
     });
@@ -290,8 +292,7 @@ describe("SSE 事件流", () => {
       body: JSON.stringify({ client_id: UUID, nick: "甲", text: "流广播" }),
     });
     expect(post.status).toBe(201);
-    // 单次 readSse 读到 message 广播为止（命中即 cancel，单次消费语义）；
-    // presence 初值在开流瞬间已发出，会先于 message 缓冲在同一 out 中
+    // readSse stops at the match; the presence frame arrives first and is buffered too
     const seen = await readSse(
       res,
       (type, data) => type === "message" && data.text === "流广播",
@@ -317,11 +318,11 @@ describe("SSE 事件流", () => {
       headers: { "x-forwarded-for": "6.6.6.6" },
       signal: ctrl.signal,
     });
-    expect(first.status).toBe(200); // 首开放行，流建立
+    expect(first.status).toBe(200);
     const second = await app.request(`/api/stream?client_id=${UUID}`, {
       headers: { "x-forwarded-for": "6.6.6.6" },
     });
-    expect(second.status).toBe(429); // 同窗口第二条超限（窗口由 rateCheck 对齐，无需真等 60s）
+    expect(second.status).toBe(429); // same aligned window, so no real 60s wait
     const err = await second.json();
     expect(err.error.code).toBe("rate_limited");
     expect(err.error.retry_after_ms).toBeGreaterThan(0);

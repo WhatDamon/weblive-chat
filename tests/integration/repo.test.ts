@@ -1,14 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { makeRepo, type TestProvider } from "../helpers";
 
-/**
- * 同一契约套件按 provider 重复运行（本地 sqlite + memory；DB_PROVIDER 显式指定时只跑该 provider，
- * 如部署期 DB_PROVIDER=postgres + DATABASE_URL 跑 PG）。
- */
+/** Same contract suite per provider (sqlite + memory locally; DB_PROVIDER=postgres runs PG). */
 function contract(provider: TestProvider) {
   describe(`Repo 契约 · ${provider}`, () => {
-    // 跨方言安全上界哨兵：PG serial(int4) 不可能超过 int4 上限，sqlite AUTOINCREMENT / memory 实际行数远达不到。
-    // 不能用 Number.MAX_SAFE_INTEGER —— postgres.js 以 oid 0 文本发送数字，PG 按列类型 int4 解析 → 执行期 out of range。
+    // Cross-dialect sentinel: PG serial is int4, and postgres.js sends numbers as text,
+    // so MAX_SAFE_INTEGER fails at runtime instead of being clamped.
     const PG_SAFE_MAX_ID = 2_147_483_647;
 
     test("bootstrap 幂等：可重复调用", async () => {
@@ -35,7 +32,7 @@ function contract(provider: TestProvider) {
       const evs = await repo.eventsSince(0, 10);
       expect(evs).toHaveLength(1);
       expect(evs[0].type).toBe("message");
-      // payload 由事务方法内部构造：含消息 id 与全文（客户端去重依据）
+      // payload is built inside the transaction: message id + full snapshot
       const pl = JSON.parse(evs[0].payload);
       expect(pl.id).toBe(String(messageId));
       expect(pl.text).toBe("你好");
@@ -56,7 +53,7 @@ function contract(provider: TestProvider) {
         sent.push(r);
       }
       const before = await repo.historyBefore(sent[2].messageId, 10);
-      expect(before.map((m) => m.text)).toEqual(["m1", "m0"]); // < id2，降序
+      expect(before.map((m) => m.text)).toEqual(["m1", "m0"]); // older than id2, descending
       const since = await repo.historySince(sent[0].messageId, 10);
       expect(since.map((m) => m.text)).toEqual(["m1", "m2"]);
       const ok = await repo.softDeleteMessage(
@@ -65,7 +62,7 @@ function contract(provider: TestProvider) {
         now + 100,
       );
       expect(ok).toBe(true);
-      // 幂等：同一行二次软删命中 WHERE deleted_at IS NULL 失败 → 返回 false
+      // second soft delete matches no row (deleted_at already set)
       const okAgain = await repo.softDeleteMessage(
         sent[1].messageId,
         "admin",
@@ -87,7 +84,7 @@ function contract(provider: TestProvider) {
       );
       expect(
         await repo.banUpsert("1.2.3.4", "spam2", "admin", Date.now()),
-      ).toBe(false); // 已存在
+      ).toBe(false);
       expect((await repo.banGet("1.2.3.4"))?.reason).toBe("spam2");
       expect(await repo.banList(100, 0)).toHaveLength(1);
       expect(await repo.banRemove("1.2.3.4")).toBe(true);
@@ -98,9 +95,9 @@ function contract(provider: TestProvider) {
     test("presence upsert 覆盖 + count 按 TTL 过滤", async () => {
       const { repo, cleanup } = await makeRepo(provider);
       await repo.presenceUpsert("a", 1000);
-      await repo.presenceUpsert("a", 2000); // 覆盖
+      await repo.presenceUpsert("a", 2000);
       await repo.presenceUpsert("b", 9000);
-      expect(await repo.presenceCount(5000)).toBe(1); // a 过期
+      expect(await repo.presenceCount(5000)).toBe(1); // a is stale
       expect(await repo.presenceCount(0)).toBe(2);
       await cleanup();
     });
@@ -110,7 +107,7 @@ function contract(provider: TestProvider) {
       for (let i = 1; i <= 3; i++)
         expect(await repo.rateHit("msg", "9.9.9.9", 0)).toBe(i);
       expect(await repo.rateHit("msg", "8.8.8.8", 0)).toBe(1);
-      expect(await repo.rateHit("stream", "9.9.9.9", 0)).toBe(1); // 不同桶独立
+      expect(await repo.rateHit("stream", "9.9.9.9", 0)).toBe(1); // separate buckets
       await cleanup();
     });
 
@@ -128,11 +125,11 @@ function contract(provider: TestProvider) {
       const evs = await repo.eventsSince(0, 10);
       expect(evs).toHaveLength(1);
       expect(evs[0].type).toBe("message");
-      expect(evs[0].created_at).toBe(now); // created_at 双驱动归一为 number
+      expect(evs[0].created_at).toBe(now); // both drivers normalize created_at to a number
       const pl = JSON.parse(evs[0].payload);
-      expect(pl.id).toBe(`e${eventId}`); // e 前缀避开 messages.id 命名空间
+      expect(pl.id).toBe(`e${eventId}`); // e-prefix keeps out of the messages.id namespace
       expect(pl.text).toBe("live-only");
-      expect((await repo.messageStats()).total).toBe(statsBefore.total); // 不落 messages
+      expect((await repo.messageStats()).total).toBe(statsBefore.total);
       await cleanup();
     });
 
@@ -144,7 +141,7 @@ function contract(provider: TestProvider) {
       expect(await repo.cleanupPresence(5000)).toBe(1);
       await repo.rateHit("msg", "9.9.9.9", 0);
       expect(await repo.cleanupRateLimits(100)).toBe(1);
-      // 消息行数裁剪：造 5 行，floor 后仅留 ≥ floor
+      // row-cap trim: everything at/above the floor id survives
       for (let i = 0; i < 5; i++)
         await repo.sendMessageAndEvent({
           client_id: "c",
@@ -154,10 +151,10 @@ function contract(provider: TestProvider) {
         });
       const stats = await repo.messageStats();
       expect(stats.total).toBe(5);
-      const keep = (await repo.historyBefore(PG_SAFE_MAX_ID, 10))[2].id; // 保留最新的 3 条 → floor 为第 3 新
+      const keep = (await repo.historyBefore(PG_SAFE_MAX_ID, 10))[2].id; // 3rd newest id
       await repo.trimMessagesBelow(keep);
       expect((await repo.messageStats()).total).toBe(3);
-      await repo.deleteMessagesOlderThan(50); // created_at=1 < 50 → 全删
+      await repo.deleteMessagesOlderThan(50); // created_at=1 < 50, so all rows go
       expect((await repo.messageStats()).total).toBe(0);
       await cleanup();
     });
@@ -185,7 +182,7 @@ function contract(provider: TestProvider) {
         bans: 1,
       });
 
-      // chat 档：只删消息与事件；封禁名单绝不能被顺手清掉
+      // chat scope must never touch the ban list
       expect(await repo.clearData("chat")).toEqual({
         messages: 2,
         events: 2,
@@ -200,12 +197,12 @@ function contract(provider: TestProvider) {
         rate_limits: 1,
         bans: 1,
       });
-      // 读路径确实清空（含事件游标基准 maxEventId）
+      // read paths empty, including the events cursor baseline
       expect(await repo.historyBefore(PG_SAFE_MAX_ID, 10)).toEqual([]);
       expect(await repo.eventsSince(0, 10)).toEqual([]);
       expect(await repo.eventsMaxId()).toBe(0);
 
-      // full 档：五张表全清（重新 seed 后计数仍是各表物理行数）
+      // full scope wipes all five tables (counts are physical rows)
       await seed();
       expect(await repo.clearData("full")).toEqual({
         messages: 2,
@@ -223,7 +220,7 @@ function contract(provider: TestProvider) {
       });
       expect(await repo.messageStats()).toEqual({ total: 0, retained: 0 });
       expect(await repo.banGet("1.2.3.4")).toBeNull();
-      // 空库上再清一次不是错误，全 0
+      // clearing an empty DB is not an error
       expect(await repo.clearData("full")).toEqual({
         messages: 0,
         events: 0,
@@ -240,7 +237,7 @@ const explicit = process.env.DB_PROVIDER;
 if (explicit && ["sqlite", "postgres", "memory"].includes(explicit)) {
   contract(explicit as TestProvider);
 } else {
-  // 本地默认：同契约双跑 sqlite + memory（memory 无需任何外部依赖，CI 友好）
+  // default: both sqlite and memory run locally
   contract("sqlite");
   contract("memory");
 }

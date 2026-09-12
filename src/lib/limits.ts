@@ -2,10 +2,9 @@ export interface RateSink {
   rateHit(bucket: string, scope: string, windowStart: number): Promise<number>;
 }
 
-/** 固定窗口宽度：60s 对齐窗口（外部构造同窗口记账时请用 windowStartFor）。 */
+/** 60s fixed window; book counters via windowStartFor so they land in the same window. */
 const RATE_WINDOW_MS = 60_000;
 
-/** 当前所在窗口的起点（epoch 对齐）；复用同一取整逻辑，避免各处各写一套。 */
 export function windowStartFor(now: number = Date.now()): number {
   return Math.floor(now / RATE_WINDOW_MS) * RATE_WINDOW_MS;
 }

@@ -6,7 +6,7 @@ export interface RateCfg {
   msgPerMin: number;
   streamPerMin: number;
   loginPerMin: number;
-  /** 危险操作（清空数据）预算：预检与执行共用一个桶。 */
+  /** Preview and execute share this bucket. */
   purgePerMin: number;
   windowMs: number;
 }
@@ -19,20 +19,17 @@ export interface AppConfig {
   tursoAuthToken?: string;
   migrateOnBoot: boolean;
   adminSecret: string;
-  devIp: string; // 本地无代理时 x-forwarded-for 缺失的回退
-  // 限额
+  devIp: string; // fallback when x-forwarded-for is absent (local dev, no proxy)
   nickMax: number;
   textMax: number;
-  // 违禁词：bannedWords 为显式追加词（BANNED_WORDS），词库文件按模式从 bannedWordsDir 加载
+  // bannedWords = explicit extras; the rest load from bannedWordsDir per mode
   bannedWords: string[];
   bannedWordsMode: BannedWordsMode;
   bannedWordsDir: string;
   bannedWordsAllow: string[];
-  // 保留/降级
   retentionDays: number;
   maxRows: number;
   backfillMax: number;
-  // 实时
   presenceTtlMs: number;
   pollMs: number;
   presenceUpsertMs: number;
@@ -41,7 +38,6 @@ export interface AppConfig {
   eventsTtlMs: number;
   maintenanceEvery: number;
   rate: RateCfg;
-  // 安全
   allowedOrigins: string[];
   requireOrigin: boolean;
   sessionDays: number;
@@ -74,8 +70,7 @@ export function loadConfig(
   if (provider === "postgres" && !/^postgres(ql)?:\/\//.test(databaseUrl))
     throw new Error("DB_PROVIDER=postgres 时必须提供 DATABASE_URL");
   const envName = env.NODE_ENV ?? "development";
-  // memory = 纯内存实时广播（不持久化、无跨实例共享）。Vercel/Serverless 多函数实例上
-  // 收不到彼此消息且数据随实例回收——生产必须显式拒绝；仅限本地/单实例演示与测试。
+  // memory has no persistence and no cross-instance sharing, so serverless cannot use it.
   if (provider === "memory" && envName === "production")
     throw new Error(
       "DB_PROVIDER=memory 不适用于生产/Vercel（无持久化、Serverless 无共享内存）；生产请配置 sqlite(Turso)/postgres",
@@ -83,7 +78,7 @@ export function loadConfig(
   const adminSecret = env.ADMIN_SECRET ?? "";
   if (envName === "production" && !adminSecret)
     throw new Error("生产环境必须设置 ADMIN_SECRET");
-  // ALLOWED_ORIGINS 留空 = 全开；写成 "*" 也按全开处理（否则 "*" 会被当成字面量来源，反而把所有带 Origin 的请求锁死）
+  // Empty = open mode; "*" also means open, since treating it literally locks out every origin.
   const rawOrigins = (env.ALLOWED_ORIGINS ?? "")
     .split(",")
     .map((s) => s.trim().toLowerCase().replace(/\/+$/, ""))

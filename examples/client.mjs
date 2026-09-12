@@ -1,19 +1,5 @@
 #!/usr/bin/env node
-/**
- * WebLive Chat 最小接入示例（零依赖，Bun / Node >= 18 均可运行）
- *
- *   bun examples/client.mjs                                    # 连本机 http://localhost:3000
- *   bun examples/client.mjs https://your-app.vercel.app 昵称    # 连线上部署
- *
- * 演示接入方必须处理好的五件事：
- *   1. client_id 的生成与持久化（浏览器里等价于 localStorage —— 多标签共享同一身份，在线人数按人计）
- *   2. SSE 建流与事件分发（message / delete / presence / notice / ban / error）
- *   3. 断线自动重连：带 since 续传（连接会被平台按函数时限切断，这是正常现象）
- *   4. 重连前用 GET /api/messages?since= 补历史（events 出站表只保留 1 小时）
- *   5. 按 id 去重（since 续传会重放游标之后的事件）+ 静默断链看门狗
- *
- * 详细说明见 docs/integration.md
- */
+/** Zero-dep example: `bun examples/client.mjs [base] [nick]`; see docs/integration.md */
 import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,11 +7,11 @@ import { fileURLToPath } from "node:url";
 
 const BASE = (process.argv[2] ?? "http://localhost:3000").replace(/\/+$/, "");
 const NICK = process.argv[3] ?? "示例客户端";
-const RECONNECT_MS = 1000; // 断线重连间隔：不要低于 1s，否则容易撞开流限流（默认 20 次/min）
-const SEEN_MAX = 5000; // 去重表上限，长连接下防内存增长
-const IDLE_MS = 45_000; // 看门狗：45s 没收到任何帧（含 ": ping" 心跳）就重连
+const RECONNECT_MS = 1000; // keep >= 1s or reconnects trip the stream rate limit (20/min)
+const SEEN_MAX = 5000;
+const IDLE_MS = 45_000;
 
-/** 浏览器里换成 localStorage 读写即可，语义相同 */
+/** Browser equivalent: localStorage */
 function loadClientId() {
   const file = join(tmpdir(), "weblive-chat-client-id");
   try {
@@ -38,9 +24,9 @@ function loadClientId() {
 }
 
 export class ChatClient {
-  #since = 0; // 流游标：**events.id**（不是 messages.id）
-  #lastMessageId = 0; // 历史游标：**messages.id**，用于补洞与翻页
-  #seen = new Map(); // 消息 id 去重
+  #since = 0; // SSE cursor: events.id, NOT messages.id
+  #lastMessageId = 0; // history cursor: messages.id
+  #seen = new Map();
   #handlers = new Map();
   #ac = null;
   #closed = true;
@@ -62,7 +48,7 @@ export class ChatClient {
     for (const fn of this.#handlers.get(type) ?? []) fn(data);
   }
 
-  /** 发言：POST 成功不代表已显示，消息会经 SSE 广播回来（包括自己发的） */
+  /** POST accepted != displayed: the message comes back over SSE, including your own */
   async send(text) {
     const res = await fetch(`${this.base}/api/messages`, {
       method: "POST",
@@ -80,28 +66,28 @@ export class ChatClient {
       err.retryAfterMs = body?.error?.retry_after_ms;
       throw err;
     }
-    return body; // { id, created_at }：ephemeral 模式下 id 形如 "e12"
+    return body; // { id, created_at }; ephemeral live-only ids look like "e12"
   }
 
-  /** 补历史：events 表只保留 1h，断线久了必须用 messages 接口回填 */
+  /** Backfill: the events table is purged after ~1h, so long disconnects need this */
   async backfill(limit = 200) {
     const qs = new URLSearchParams({
       since: String(this.#lastMessageId),
       limit: String(limit),
     });
     const res = await fetch(`${this.base}/api/messages?${qs}`);
-    if (!res.ok) return; // 存储不可用等情况：交给流本身去报错
+    if (!res.ok) return; // storage outages are reported by the stream instead
     const { messages } = await res.json();
     for (const m of messages) this.#onMessage(m);
   }
 
   #onMessage(m) {
     const id = String(m.id);
-    if (this.#seen.has(id)) return; // 幂等：续传会重放
+    if (this.#seen.has(id)) return; // replay after resume
     this.#seen.set(id, 1);
     if (this.#seen.size > SEEN_MAX)
       this.#seen.delete(this.#seen.keys().next().value);
-    // 只有持久化消息（纯数字 id）才能推进历史游标；"e12" 是 ephemeral 直播消息
+    // only persisted (numeric) ids advance the history cursor
     if (/^\d+$/.test(id))
       this.#lastMessageId = Math.max(this.#lastMessageId, Number(id));
     this.#emit("message", m);
@@ -118,7 +104,7 @@ export class ChatClient {
       let wait = RECONNECT_MS;
       try {
         await this.backfill();
-        await this.#stream(); // 正常返回 = 连接被平台/网络切断
+        await this.#stream(); // normal return = platform or network cut the stream
       } catch (err) {
         if (!this.#closed) this.#emit("error", err);
         if (err?.retryAfterMs) wait = Math.max(wait, err.retryAfterMs);
@@ -148,7 +134,7 @@ export class ChatClient {
     }
     this.#lastFrame = Date.now();
     const watchdog = setInterval(() => {
-      // 服务端每 15s 至少发一次 ": ping"，长时间静默说明链路已死
+      // the server pings at least every 15s; longer silence means the link is dead
       if (Date.now() - this.#lastFrame > IDLE_MS) this.#ac.abort();
     }, 5_000);
     try {
@@ -172,12 +158,11 @@ export class ChatClient {
     }
   }
 
-  /** 解析一个 SSE 帧：event 名 + data 行（注释行是心跳，直接忽略） */
   #frame(raw) {
     let type = "message";
     const data = [];
     for (const line of raw.split("\n")) {
-      if (line.startsWith(":")) continue; // ": ping"
+      if (line.startsWith(":")) continue; // heartbeat
       if (line.startsWith("event:")) type = line.slice(6).trim();
       else if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
     }
@@ -186,7 +171,7 @@ export class ChatClient {
     try {
       payload = JSON.parse(data.join("\n"));
     } catch {
-      return; // 非 JSON 帧一律忽略
+      return;
     }
     if (type === "message") return this.#onMessage(payload);
     if (type === "delete") return this.#emit("delete", payload);
@@ -194,7 +179,7 @@ export class ChatClient {
     if (type === "notice") return this.#emit("notice", payload);
     if (type === "ban") return this.#emit("ban", payload);
     if (type === "error") return this.#emit("error", payload);
-    // 未知事件类型必须忽略：服务端新增事件类型不得让旧客户端崩
+    // unknown event types must be ignored: new server events must not break old clients
   }
 
   close() {
@@ -203,8 +188,7 @@ export class ChatClient {
   }
 }
 
-// ---------------- 直接运行本文件时的演示 ----------------
-/** 被 import 时不执行演示：优先用 import.meta.main（Bun / Node 24+），否则比对真实路径 */
+/** Skip the demo on import: import.meta.main needs Bun/Node 24+, else compare real paths */
 function isDirectRun() {
   if (import.meta.main !== undefined) return import.meta.main;
   const entry = process.argv[1];

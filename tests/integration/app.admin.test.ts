@@ -39,7 +39,6 @@ describe("admin API", () => {
     expect(setCookie).toContain("wl_admin=");
     expect(setCookie).toContain("HttpOnly");
     expect(setCookie).toContain("SameSite=Lax");
-    // 用 cookie 访问
     res = await app.request("/api/admin/stats", {
       headers: { cookie: setCookie.split(";")[0] },
     });
@@ -55,7 +54,7 @@ describe("admin API", () => {
     });
     const cookie = (login.headers.get("set-cookie") ?? "").split(";")[0];
     const auth = (extra: Record<string, string> = {}) => ({ cookie, ...extra });
-    // 请求体置于 init 顶层，content-type 归入 headers
+    // body goes at the init top level; content-type belongs in headers
     const postBan = (ip: string, reason: string) =>
       app.request("/api/admin/bans", {
         method: "POST",
@@ -189,8 +188,11 @@ describe("危险操作：清空数据（多重校验）", () => {
       body: JSON.stringify({ client_id: UUID, nick: "n", text }),
     });
   const listBans = async (app: any, cookie: string) =>
-    (await (await app.request("/api/admin/bans", { headers: { cookie } })).json())
-      .bans;
+    (
+      await (
+        await app.request("/api/admin/bans", { headers: { cookie } })
+      ).json()
+    ).bans;
 
   test("预检：未登录 401；scope 非法 400；合法则返回影响面 / 短语 / 令牌", async () => {
     const { app } = await bootPurge();
@@ -224,7 +226,6 @@ describe("危险操作：清空数据（多重校验）", () => {
     const cookie = await login(app);
     await seedMsg(app);
     const p = await (await preview(app, cookie, "chat")).json();
-    // 缺口令
     let res = await commit(app, cookie, {
       scope: "chat",
       token: p.token,
@@ -232,7 +233,6 @@ describe("危险操作：清空数据（多重校验）", () => {
     });
     expect(res.status).toBe(401);
     expect((await res.json()).error.code).toBe("invalid_secret");
-    // 错口令
     res = await commit(app, cookie, {
       scope: "chat",
       token: p.token,
@@ -241,7 +241,6 @@ describe("危险操作：清空数据（多重校验）", () => {
     });
     expect(res.status).toBe(401);
     expect((await res.json()).error.code).toBe("invalid_secret");
-    // 口令对但短语不对（少字）
     res = await commit(app, cookie, {
       scope: "chat",
       token: p.token,
@@ -250,8 +249,9 @@ describe("危险操作：清空数据（多重校验）", () => {
     });
     expect(res.status).toBe(400);
     expect((await res.json()).error.code).toBe("invalid_confirm");
-    // 以上失败均未删数据
-    expect((await (await app.request("/api/messages?limit=5")).json()).messages).toHaveLength(1);
+    expect(
+      (await (await app.request("/api/messages?limit=5")).json()).messages,
+    ).toHaveLength(1);
   });
 
   test("令牌：篡改 / 换 IP / 二次使用均拒；正确链路 200 并真正清空", async () => {
@@ -259,7 +259,6 @@ describe("危险操作：清空数据（多重校验）", () => {
     const cookie = await login(app);
     await seedMsg(app);
     const p = await (await preview(app, cookie, "chat")).json();
-    // 篡改签名
     let res = await commit(app, cookie, {
       scope: "chat",
       token: `${p.token}x`,
@@ -268,16 +267,20 @@ describe("危险操作：清空数据（多重校验）", () => {
     });
     expect(res.status).toBe(400);
     expect((await res.json()).error.code).toBe("invalid_token");
-    // 换 IP 复用同一令牌（令牌绑定发起 IP）
+    // token is bound to the requesting IP
     res = await commit(
       app,
       cookie,
-      { scope: "chat", token: p.token, confirm: p.confirm_phrase, secret: "test-secret" },
+      {
+        scope: "chat",
+        token: p.token,
+        confirm: p.confirm_phrase,
+        secret: "test-secret",
+      },
       "2.2.2.2",
     );
     expect(res.status).toBe(400);
     expect((await res.json()).error.code).toBe("invalid_token");
-    // 正确链路
     res = await commit(app, cookie, {
       scope: "chat",
       token: p.token,
@@ -289,8 +292,9 @@ describe("危险操作：清空数据（多重校验）", () => {
     expect(ok.scope).toBe("chat");
     expect(ok.deleted.messages).toBe(1);
     expect(ok.deleted.events).toBe(1);
-    expect((await (await app.request("/api/messages?limit=5")).json()).messages).toHaveLength(0);
-    // 同一令牌二次使用 → 一次性，被拒
+    expect(
+      (await (await app.request("/api/messages?limit=5")).json()).messages,
+    ).toHaveLength(0);
     res = await commit(app, cookie, {
       scope: "chat",
       token: p.token,
@@ -323,8 +327,10 @@ describe("危险操作：清空数据（多重校验）", () => {
     });
     expect(r1.status).toBe(200);
     expect((await r1.json()).deleted.bans).toBe(0);
-    expect((await (await app.request("/api/messages?limit=5")).json()).messages).toHaveLength(0);
-    expect(await listBans(app, cookie)).toHaveLength(1); // 封禁仍在
+    expect(
+      (await (await app.request("/api/messages?limit=5")).json()).messages,
+    ).toHaveLength(0);
+    expect(await listBans(app, cookie)).toHaveLength(1);
 
     const p2 = await (await preview(app, cookie, "full")).json();
     expect(p2.confirm_phrase).toBe("清空全部数据");
@@ -347,7 +353,9 @@ describe("危险操作：清空数据（多重校验）", () => {
   });
 
   test("限流：预检与执行共用同一桶，超限 429", async () => {
-    const { app } = await bootPurge({ rate: { ...PURGE_RATE, purgePerMin: 2 } });
+    const { app } = await bootPurge({
+      rate: { ...PURGE_RATE, purgePerMin: 2 },
+    });
     const cookie = await login(app);
     expect((await preview(app, cookie, "chat")).status).toBe(200);
     expect((await preview(app, cookie, "chat")).status).toBe(200);

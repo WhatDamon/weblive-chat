@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
 const IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/;
-// 允许 IPv4-mapped IPv6（如 ::ffff:1.2.3.4，XFF 常见形态）：含冒号时放行 0-9a-f 与点，仅做小写/trim 归一（匹配对称即可）
+// Accepts IPv4-mapped IPv6 (::ffff:1.2.3.4, common in XFF); matching only needs symmetry.
 const IPV6 = /^[0-9a-f:.]+$/i;
 
 export function normalizeIp(raw: string | undefined | null): string | null {

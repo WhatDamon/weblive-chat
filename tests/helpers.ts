@@ -16,7 +16,6 @@ export async function makeRepo(explicit?: TestProvider): Promise<{
     process.env.DB_PROVIDER ??
     "sqlite") as TestProvider;
   if (provider === "memory") {
-    // 纯内存：无文件可清理
     const repo = await createRepo("memory", "");
     await repo.bootstrap();
     return { repo, cleanup: async () => repo.close() };
@@ -40,7 +39,7 @@ export function testCfg(over: Partial<AppConfig> = {}): AppConfig {
     env: "test",
     port: 0,
     dbProvider: "sqlite",
-    // databaseUrl 仅作类型占位：真实连接统一由 makeApp 用可清理目录创建（见下）
+    // placeholder: makeApp builds the real repo in its own temp dir
     databaseUrl: "file:cfg-placeholder.db",
     migrateOnBoot: true,
     adminSecret: "test-secret",
@@ -48,7 +47,7 @@ export function testCfg(over: Partial<AppConfig> = {}): AppConfig {
     nickMax: 24,
     textMax: 1000,
     bannedWords: ["赌博"],
-    // 测试默认关闭词库（不依赖仓库 data/ 目录），需要时用 over 注入 mode/dir
+    // wordfilter off by default: tests must not depend on the repo data/ dir
     bannedWordsMode: "off",
     bannedWordsDir: join(tmpdir(), "wl-no-words"),
     bannedWordsAllow: [],
@@ -96,7 +95,7 @@ export async function makeApp(
     };
   }
   const dir = mkdtempSync(join(tmpdir(), "wl-app-"));
-  // cfg 与 repo 共用同一目录同一库文件，避免 testCfg 每 boot 泄漏空 /tmp 目录
+  // one temp dir shared by cfg and repo so nothing leaks per boot
   const cfg = testCfg({ ...over, databaseUrl: `file:${join(dir, "t.db")}` });
   const repo = await createRepo("sqlite", cfg.databaseUrl);
   await repo.bootstrap();
@@ -114,10 +113,7 @@ export async function makeApp(
 
 export const UUID = "11111111-2222-4333-8444-555555555555";
 
-/**
- * 读取 SSE 响应直到 waitFor 命中（命中即 cancel 流，单次消费语义）。
- * 只收 data 帧（SSE 注释行如 ": ping" 无 data: 前缀，data 为 null 不 push，也不触发 waitFor）。
- */
+/** Reads SSE until waitFor matches, then cancels the stream; blocks without data: are skipped. */
 export async function readSse(
   res: Response,
   waitFor: (type: string, data: any) => boolean,

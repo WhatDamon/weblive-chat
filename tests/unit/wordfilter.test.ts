@@ -63,7 +63,7 @@ describe("loadWordFilter", () => {
   const dir = mkdtempSync(join(tmpdir(), "wl-words-"));
   const opts = { dir, extra: ["环境禁词"], allow: [] as string[] };
 
-  // 词库文件必须在用例执行前就位，故用 beforeAll（describe 体内同步代码会在收集期就执行）
+  // beforeAll: files must be in place first; describe-body code runs at collection.
   beforeAll(() => {
     mkdirSync(join(dir, "basic"));
     mkdirSync(join(dir, "strict"));

@@ -22,7 +22,7 @@ function fakeRepo(over: Record<string, any> = {}) {
       presenceUpsert: async () => {
         state.upserts++;
       },
-      presenceCount: async () => (state.counts++ === 0 ? 1 : 1), // 固定 1 → 只在首推变化
+      presenceCount: async () => (state.counts++ === 0 ? 1 : 1), // always 1; first push differs
       banGet: async () => state.ban,
     } as any,
   };
@@ -100,7 +100,7 @@ describe("runStream", () => {
   test("游标落后（events 已清理）→ 重置到 maxId 后继续收到新事件", async () => {
     const f = fakeRepo({ maxId: 50 });
     const out: [string, unknown][] = [];
-    // 场景：cursor=100，但 events 只保留到 50（已清理）→ 空转检测后重置为 50，随后新事件 101 到达
+    // Cursor 100 but events were purged to 50: the idle check resets, then 101 arrives.
     f.repo.eventsSince = async (since: number) => {
       if (since >= 100) return [];
       if (since >= 50)
@@ -125,11 +125,11 @@ describe("runStream", () => {
     ctrl.stop();
     expect(
       out.some((o) => o[0] === "message" && (o[1] as any).id === "101"),
-    ).toBe(true); // 重置后 101 被推
+    ).toBe(true);
   });
 
   test("空闲无任何写出超 heartbeatMs → emitComment 收到 ping 保活", async () => {
-    const f = fakeRepo(); // events 恒空、presence 恒 1（仅首推一次，之后静默）
+    const f = fakeRepo(); // No events, constant presence count: idle after the first push
     const comments: string[] = [];
     const ctrl = runStream({
       repo: f.repo,
@@ -165,6 +165,6 @@ describe("runStream", () => {
     });
     await sleep(12);
     ctrl.stop();
-    expect(f.state.upserts).toBe(1); // 仅启动初值一次，门控生效
+    expect(f.state.upserts).toBe(1); // Only the startup upsert: the cadence gate holds
   });
 });

@@ -3,12 +3,7 @@ import { readFileSync } from "node:fs";
 import { renderPage } from "../../src/routes/pages";
 import { makeApp } from "../helpers";
 
-/**
- * 后台「清空数据」页逻辑的可重跑校验：把 public/admin.html 的 inline JS 放进极简 DOM shim 里跑，
- * 用真实 app 作为后端（fetch 走 app.request + Cookie jar），验证：
- * 预检 → 按钮延迟可用 → 短语/口令校验 → 原生二次确认（可取消）→ 执行 → 令牌作废（不可重放）。
- * 页面其余渲染逻辑不在此文件的关注范围（只保证被调用的 DOM API 在 shim 中可用）。
- */
+/** Runs public/admin.html inline JS in a minimal DOM shim, with the real app as backend. */
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -69,7 +64,7 @@ async function bootPage(
   cleanups.push(h.cleanup);
   const { app } = h;
 
-  // Cookie jar：页面依赖浏览器自动携带 wl_admin
+  // cookie jar: the page relies on the browser sending wl_admin
   let cookie = "";
   const fetchShim = async (path: string, opts2: any = {}) => {
     const headers = {
@@ -92,16 +87,15 @@ async function bootPage(
     },
   };
 
-  // 与线上一致：页面经过 renderPage（{{...}} 占位符 → src/lib/copy.ts，注入 window.COPY/fill）
+  // render like production: {{tokens}} resolved and window.COPY injected
   const html = renderPage(
     readFileSync(new URL("../../public/admin.html", import.meta.url), "utf8"),
   );
-  // 两个脚本按顺序拼接：先是注入脚本，才是页面脚本（页面脚本从 window 取用文案）
+  // bootstrap script first, page script second (it reads window.COPY)
   const code = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)]
     .map((m) => m[1])
     .join("\n");
   const dom = createDom();
-  // 页面脚本按浏览器全局环境执行：document/window/location/fetch/alert 由 shim 提供
   const locationShim = {
     origin: opts.location ?? "http://localhost:3000",
     href: (opts.location ?? "http://localhost:3000") + "/admin",
@@ -148,13 +142,12 @@ describe("后台页·清空数据（DOM shim 驱动真实页面逻辑）", () =>
     const { dom, alerts, confirms } = p;
     const el = (id: string) => dom.document.getElementById(id);
 
-    await tick(); // 等页面初始化（/api/meta + refreshAuth）落定
+    await tick(); // let the init IIFE (/api/meta + refreshAuth) settle
     el("secret").value = "test-secret";
     await el("loginBtn").onclick();
     expect(el("login").style.display).toBe("none");
     expect(el("panels").style.display).toBe("block");
 
-    // 造一条消息，便于观察删除效果
     const seeded = await p.post("/api/messages", {
       client_id: "11111111-2222-4333-8444-555555555555",
       nick: "n",
@@ -162,22 +155,19 @@ describe("后台页·清空数据（DOM shim 驱动真实页面逻辑）", () =>
     });
     expect(seeded.status).toBe(201);
 
-    // ① 预检：只读，返回影响面与短语
     await el("pPreviewBtn").onclick();
     expect(el("pRun").style.display).toBe("block");
     expect(el("pPhrase").textContent).toBe("清空聊天记录");
     expect(el("pSummary").textContent).toContain("消息 1");
     expect(el("pSummary").textContent).toContain("封禁名单");
-    // UI 延迟可用：立刻点击不可用
     expect(el("pGoBtn").disabled).toBe(true);
-    await tick(300); // 等一次定时器回调（倒计时文案在 interval 内写入）
+    await tick(300); // the countdown text is written inside the interval callback
     expect(el("pGoHint").textContent).toContain("秒后可确认");
 
-    await tick(3300); // 等过 3 秒门槛
+    await tick(3300); // past the 3s unlock delay
     expect(el("pGoBtn").disabled).toBe(false);
     expect(el("pGoHint").textContent).toContain("重新预检");
 
-    // ② 短语不符：前端拦下，不发请求、不删数据
     el("pConfirm").value = "清空聊天";
     el("pSecret").value = "test-secret";
     await el("pGoBtn").onclick();
@@ -186,7 +176,6 @@ describe("后台页·清空数据（DOM shim 驱动真实页面逻辑）", () =>
       (await (await p.app.request("/api/messages?limit=5")).json()).messages,
     ).toHaveLength(1);
 
-    // ③ 原生二次确认点「取消」：同样不删数据
     el("pConfirm").value = "清空聊天记录";
     p.setConfirm(false);
     await el("pGoBtn").onclick();
@@ -195,7 +184,6 @@ describe("后台页·清空数据（DOM shim 驱动真实页面逻辑）", () =>
       (await (await p.app.request("/api/messages?limit=5")).json()).messages,
     ).toHaveLength(1);
 
-    // ④ 确认执行：真正清空，且 UI 复位（令牌作废）
     p.setConfirm(true);
     await el("pGoBtn").onclick();
     expect(alerts.at(-1)).toContain("已清空");
@@ -206,7 +194,6 @@ describe("后台页·清空数据（DOM shim 驱动真实页面逻辑）", () =>
     expect(el("pRun").style.display).toBe("none");
     expect(el("pGoBtn").disabled).toBe(true);
 
-    // ⑤ 令牌已作废：再次点击只会被要求重新预检
     await el("pGoBtn").onclick();
     expect(alerts.at(-1)).toContain("请先预检");
   }, 20_000);
@@ -222,7 +209,6 @@ describe("后台页·清空数据（DOM shim 驱动真实页面逻辑）", () =>
     await el("pPreviewBtn").onclick();
     expect(el("pRun").style.display).toBe("block");
 
-    // 切到 full：旧令牌与输入必须被清掉（force 重新预检）
     dom.radios[0].checked = false;
     dom.radios[1].checked = true;
     dom.radios[1].onchange();
@@ -236,7 +222,6 @@ describe("后台页·清空数据（DOM shim 驱动真实页面逻辑）", () =>
   }, 20_000);
 
   test("Origin 被拒时后台页给出可执行提示（而不是干巴巴的「来源不被允许」）", async () => {
-    // 模拟真实事故：白名单里没有当前域名（例如换了域名但没更新 ALLOWED_ORIGINS）
     const p = await bootPage(
       { allowedOrigins: ["https://old.example"] },
       {
@@ -251,6 +236,6 @@ describe("后台页·清空数据（DOM shim 驱动真实页面逻辑）", () =>
     const msg = p.alerts.at(-1)!;
     expect(msg).toContain("ALLOWED_ORIGINS");
     expect(msg).toContain("https://livechat.damon233.top");
-    expect(msg).toContain("留空"); // 给出「或留空表示全开」这条出路
+    expect(msg).toContain("留空");
   }, 20_000);
 });

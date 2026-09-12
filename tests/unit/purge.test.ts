@@ -36,7 +36,6 @@ describe("purge 校验核心（危险操作的多重校验）", () => {
     expect(purgePhraseMatches("chat", "清空聊天记录")).toBe(true);
     expect(purgePhraseMatches("chat", "  清空聊天记录\n")).toBe(true);
     expect(purgePhraseMatches("full", "清空全部数据")).toBe(true);
-    // 档位不符 / 少字 / 错字 / 类型不对
     expect(purgePhraseMatches("chat", "清空全部数据")).toBe(false);
     expect(purgePhraseMatches("chat", "清空聊天")).toBe(false);
     expect(purgePhraseMatches("chat", "清空聊天記录")).toBe(false);
@@ -67,33 +66,34 @@ describe("purge 校验核心（危险操作的多重校验）", () => {
 
   test("令牌：档位不符 / IP 不符 / 篡改 / 过期 / 换密钥 一律拒绝", () => {
     const { token } = mintPurgeToken({ scope: "chat", ip: IP }, SECRET);
-    expect(verifyPurgeToken(token, { scope: "full", ip: IP }, SECRET)).toEqual(
-      { ok: false, reason: "token_scope" },
-    );
+    expect(verifyPurgeToken(token, { scope: "full", ip: IP }, SECRET)).toEqual({
+      ok: false,
+      reason: "token_scope",
+    });
     expect(
       verifyPurgeToken(token, { scope: "chat", ip: "1.1.1.1" }, SECRET),
     ).toEqual({ ok: false, reason: "token_ip" });
     expect(
       verifyPurgeToken(`${token}x`, { scope: "chat", ip: IP }, SECRET).ok,
     ).toBe(false);
-    expect(verifyPurgeToken(undefined, { scope: "chat", ip: IP }, SECRET).ok).toBe(
-      false,
-    );
-    expect(verifyPurgeToken("abc.def", { scope: "chat", ip: IP }, SECRET).ok).toBe(
-      false,
-    );
+    expect(
+      verifyPurgeToken(undefined, { scope: "chat", ip: IP }, SECRET).ok,
+    ).toBe(false);
+    expect(
+      verifyPurgeToken("abc.def", { scope: "chat", ip: IP }, SECRET).ok,
+    ).toBe(false);
     expect(
       verifyPurgeToken(token, { scope: "chat", ip: IP }, "other-secret").ok,
     ).toBe(false);
-    // 过期：签发时间早于 TTL 窗口 → verifyToken 的 exp 校验失败
+    // Expired: minted before the TTL window, so the exp check rejects it.
     const stale = mintPurgeToken(
       { scope: "chat", ip: IP },
       SECRET,
       Date.now() - PURGE_TOKEN_TTL_MS - 1,
     );
-    expect(verifyPurgeToken(stale.token, { scope: "chat", ip: IP }, SECRET)).toEqual(
-      { ok: false, reason: "invalid_token" },
-    );
+    expect(
+      verifyPurgeToken(stale.token, { scope: "chat", ip: IP }, SECRET),
+    ).toEqual({ ok: false, reason: "invalid_token" });
   });
 
   test("令牌不可预测：两次签发 nonce 与令牌均不同", () => {

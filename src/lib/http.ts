@@ -28,7 +28,7 @@ export function jsonError(
           ? { retry_after_ms: extra.retry_after_ms }
           : {}),
         ...(extra?.reason !== undefined ? { reason: extra.reason } : {}),
-        // Origin 闸口诊断：回显实际收到的来源与已配置数量，否则「来源不被允许」无法定位是哪个域名被拒
+        // Echo the received origin and allowlist size, or the 403 cannot be diagnosed.
         ...(extra?.origin !== undefined ? { origin: extra.origin } : {}),
         ...(extra?.allowed_origins_count !== undefined
           ? { allowed_origins_count: extra.allowed_origins_count }
@@ -54,6 +54,6 @@ export async function readJson(
 export function parseIdParam(raw: string | undefined): number | null {
   if (!raw || !/^\d+$/.test(raw)) return null;
   const n = Number(raw);
-  // 上界夹取到 MAX_ID_BOUND（PG messages/events.id = serial/int4）：超大用户游标不得直入 `id < ?`（PG 执行期 out of range）
+  // Clamp to MAX_ID_BOUND: PG serial columns overflow on larger ids at execution time.
   return Number.isSafeInteger(n) && n > 0 ? Math.min(n, MAX_ID_BOUND) : null;
 }

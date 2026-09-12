@@ -48,11 +48,12 @@ describe("loadConfig", () => {
   });
 
   test("ALLOWED_ORIGINS=* 等价于全开（避免写成 * 反而锁死全部来源）", () => {
-    expect(loadConfig({ ...base, ALLOWED_ORIGINS: "*" }).allowedOrigins).toEqual(
-      [],
-    );
     expect(
-      loadConfig({ ...base, ALLOWED_ORIGINS: "https://a.com,*" }).allowedOrigins,
+      loadConfig({ ...base, ALLOWED_ORIGINS: "*" }).allowedOrigins,
+    ).toEqual([]);
+    expect(
+      loadConfig({ ...base, ALLOWED_ORIGINS: "https://a.com,*" })
+        .allowedOrigins,
     ).toEqual([]);
     expect(
       loadConfig({ ...base, ALLOWED_ORIGINS: "  " }).allowedOrigins,
@@ -63,7 +64,7 @@ describe("loadConfig", () => {
     const cfg = loadConfig({ ...base, DB_PROVIDER: "memory" });
     expect(cfg.dbProvider).toBe("memory");
     expect(cfg.databaseUrl).toBe("");
-    expect(cfg.adminSecret.length).toBeGreaterThan(0); // 非生产仍可用 dev 回退
+    expect(cfg.adminSecret.length).toBeGreaterThan(0); // non-prod falls back to the dev secret
   });
 
   test("DB_PROVIDER=memory + 生产环境抛错（不适用于 Vercel/Serverless）", () => {

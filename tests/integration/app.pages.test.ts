@@ -18,8 +18,8 @@ describe("静态页", () => {
     expect(root.headers.get("location")).toBe("/demo.html");
     const demo = await (await app.request("/demo.html")).text();
     expect(demo).toContain('id="messages"');
-    expect(demo).toContain("wl.client"); // client_id 持久化键
-    // 文案在响应时才注入：页面不残留占位符，且带上 window.COPY/window.fill
+    expect(demo).toContain("wl.client"); // client_id persistence key
+    // copy is injected at response time: no tokens left, window.COPY present
     expect(demo).not.toContain("{{");
     expect(demo).toContain("window.COPY=");
     expect(demo).toContain("window.fill=");

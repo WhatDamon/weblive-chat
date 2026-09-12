@@ -42,14 +42,11 @@ export interface Repo {
   readonly provider: Provider;
   bootstrap(): Promise<void>;
   close(): Promise<void>;
-  /** events + messages 单事务双写（SQLite BEGIN IMMEDIATE / PG begin）。
-   * 事件类型恒为 message；payload 由实现**在事务内拿到 messageId 后自动构造**：
-   * `{id: String(messageId), client_id, nick, text, created_at}`（含 id 供客户端去重/对应 delete）。 */
+  /** Single-tx dual write; payload.id = String(messageId) so clients can dedupe. */
   sendMessageAndEvent(
     m: MessageInput,
   ): Promise<{ messageId: number; eventId: number }>;
-  /** 仅实时（ephemeral 模式）广播：只写 events、不写 messages；payload id 形如 "e<eventId>"（避开 messages.id 命名空间，避免 delete 误伤）。
-   * 内部先插空 payload 取 eventId，再在**同一事务**内 UPDATE 为完整 JSON。 */
+  /** Live-only broadcast: events only, id "e<id>" avoids the messages.id namespace. */
   publishEphemeralMessage(m: MessageInput): Promise<{ eventId: number }>;
   insertEvent(
     type: string,
@@ -73,17 +70,16 @@ export interface Repo {
   presenceUpsert(clientId: string, at: number): Promise<void>;
   presenceCount(cutoff: number): Promise<number>;
   rateHit(bucket: string, scope: string, windowStart: number): Promise<number>;
-  /** 消息行统计：total 与 retained 同为**物理行数**（含软删占位行；软删不删行，仅保留裁剪/超龄清理才物理删除）。容量判定/降级/estimate_bytes 一律用此口径。 */
+  /** Physical row count incl. soft-deleted rows; capacity and degrade decisions must use this. */
   messageStats(): Promise<{ total: number; retained: number }>;
   cleanupEvents(before: number): Promise<number>;
   cleanupPresence(before: number): Promise<number>;
   cleanupRateLimits(before: number): Promise<number>;
   trimMessagesBelow(idFloor: number): Promise<number>;
   deleteMessagesOlderThan(cutoff: number): Promise<number>;
-  /** 危险操作·预检：各表当前物理行数（只读，不修改任何数据）。 */
+  /** Purge preview: read-only per-table row counts. */
   purgeCounts(): Promise<PurgeCounts>;
-  /** 危险操作·执行：按档位白名单清空数据，返回各表**实际删除行数**（未涉及的表恒为 0）。
-   * 档位 → 表 的映射由 PURGE_TABLES 唯一决定，调用方无法指定任意表名。 */
+  /** Purges only PURGE_TABLES[scope]; returns actually deleted row counts. */
   clearData(scope: PurgeScope): Promise<PurgeCounts>;
 }
 
@@ -100,7 +96,7 @@ const mapMessage = (r: any): MessageRow => ({
       : Number(r.deleted_at),
 });
 
-/** events 行归一：PG bigint 列返回 string，sqlite INTEGER 返回 number → 两驱动统一收口为 number（与 mapMessage 同策略）。 */
+/** PG returns bigint columns as strings, so both drivers normalize ids/timestamps to number. */
 const mapEvent = (r: any): EventRow => ({
   id: Number(r.id),
   type: r.type,
@@ -108,7 +104,7 @@ const mapEvent = (r: any): EventRow => ({
   created_at: Number(r.created_at),
 });
 
-// SQL 模板（仅含 ? 占位；按方言追加 RETURNING 或用事务包裹，见各自的执行分支）
+// Portable templates using ? placeholders; each dialect appends RETURNING or wraps in a tx.
 const SQL = {
   insMessage:
     "INSERT INTO messages (client_id, nick, text, created_at) VALUES (?, ?, ?, ?)",
@@ -139,7 +135,6 @@ const SQL = {
   delRates: "DELETE FROM rate_limits WHERE window_start < ?",
   trimBelow: "DELETE FROM messages WHERE id < ?",
   delOlder: "DELETE FROM messages WHERE created_at < ?",
-  // 危险操作（清空）：计数与全表删除分开命名，避免与上面带 WHERE 的清理语句混用
   cntMessages: "SELECT COUNT(*) AS c FROM messages",
   cntEvents: "SELECT COUNT(*) AS c FROM events",
   cntPresence: "SELECT COUNT(*) AS c FROM presence",
@@ -147,7 +142,6 @@ const SQL = {
   cntRateLimits: "SELECT COUNT(*) AS c FROM rate_limits",
 };
 
-/** 档位白名单 → 全表删除语句（三驱动共用同一套 ? 占位模板）。 */
 const DELETE_ALL_SQL: Record<PurgeTable, string> = {
   messages: "DELETE FROM messages",
   events: "DELETE FROM events",
@@ -164,7 +158,6 @@ const COUNT_SQL: Record<PurgeTable, string> = {
   bans: SQL.cntBans,
 };
 
-/** 固定遍历顺序（仅影响响应里的字段顺序，与语义无关）。 */
 const emptyCounts = (): PurgeCounts => ({
   messages: 0,
   events: 0,
@@ -173,7 +166,7 @@ const emptyCounts = (): PurgeCounts => ({
   bans: 0,
 });
 
-/** PG 专用：借助 xmax=0（本语句新插入）区分「新增」与「冲突后更新」，实现 true=新建/false=已存在。 */
+/** PG only: xmax = 0 means this statement inserted the row (true = newly created). */
 const banUpsertPg = `INSERT INTO bans (ip, reason, banned_by, created_at) VALUES (?, ?, ?, ?)
   ON CONFLICT (ip) DO UPDATE SET reason = excluded.reason, banned_by = excluded.banned_by, created_at = excluded.created_at
   RETURNING (xmax = 0) AS inserted`;
@@ -191,8 +184,7 @@ class SqliteRepo implements Repo {
   }
   private async run<T>(sql: string, args: unknown[]): Promise<T> {
     const r = await this.c.execute({ sql, args: args as any[] });
-    // SAFETY: libsql 返回的 Row 列已是 JS 原始类型（number/string/null）且与各查询契约行一一对应；
-    // 调用点按查询用行类型（any[] + map/Number 归一）收口，T 仅为免重复声明的泛型，非运行时强制。
+    // SAFETY: libsql returns primitives; the caller's row type does the normalization.
     return r.rows as unknown as T;
   }
   private async exec(sql: string, args: unknown[] = []): Promise<void> {
@@ -202,7 +194,8 @@ class SqliteRepo implements Repo {
   async sendMessageAndEvent(
     m: MessageInput,
   ): Promise<{ messageId: number; eventId: number }> {
-    const tx = await this.c.transaction("write"); // @libsql/client：BEGIN IMMEDIATE（execute 逐条自动提交，须用事务对象）
+    // BEGIN IMMEDIATE: plain execute() auto-commits per statement, so writes go through a tx.
+    const tx = await this.c.transaction("write");
     try {
       const ins = await tx.execute({
         sql: SQL.insMessage,
@@ -286,8 +279,7 @@ class SqliteRepo implements Repo {
     const r = await this.c.execute({ sql: SQL.softDel, args: [at, by, id] });
     return Number(r.rowsAffected) > 0;
   }
-  /** true = 新建封禁；false = 该 IP 已在封禁名单（本次覆盖更新）。libsql/sqlite 的 UPSERT rowsAffected 恒为 1（实证），
-   * 无法区分分支 → 写事务（BEGIN IMMEDIATE）内存在性检查判定，原子。 */
+  /** Upsert rowsAffected is always 1 here, so existence is checked inside a write tx (atomic). */
   async banUpsert(
     ip: string,
     reason: string,
@@ -347,7 +339,6 @@ class SqliteRepo implements Repo {
     return Number(r[0]?.count ?? 1);
   }
   async messageStats(): Promise<{ total: number; retained: number }> {
-    // 口径 = 物理行（含软删占位）；软删不改行数，仅保留裁剪物理删除 → total/retained 恒等，双字段仅为语义区分
     const r = await this.run<any[]>(SQL.stats, []);
     const total = Number(r[0]?.total ?? 0);
     return { total, retained: total };
@@ -367,7 +358,7 @@ class SqliteRepo implements Repo {
   async deleteMessagesOlderThan(cutoff: number): Promise<number> {
     return this.affected(SQL.delOlder, [cutoff]);
   }
-  /** 危险操作：白名单档位内的表在同一写事务内全清（部分失败则整体回滚，不留半清状态）。 */
+  /** All-or-nothing: the scope's tables are cleared in a single write tx. */
   async clearData(scope: PurgeScope): Promise<PurgeCounts> {
     const tx = await this.c.transaction("write");
     try {
@@ -414,15 +405,13 @@ class PostgresRepo implements Repo {
   }
   private async query<T>(sql: string, args: unknown[]): Promise<T[]> {
     const { sql: s, args: a } = this.toPgParams(sql, args);
-    // SAFETY: postgres.js unsafe 返回 RowList（含 count 元数据、按列解出的 JS 值），此处仅做泛型收口；
-    // 具体列契约由各查询调用点的行类型（T 为行类型，如 any / { id: number }）保证。
+    // SAFETY: postgres.js unsafe() returns a RowList; column contracts live at the call sites.
     return (await this.sql.unsafe(s, a)) as unknown as T[];
   }
   private async exec(sql: string, args: unknown[]): Promise<void> {
     const { sql: s, args: a } = this.toPgParams(sql, args);
     await this.sql.unsafe(s, a);
   }
-  /** 危险操作：白名单档位内的表在同一事务内全清（PG 逐表 DELETE，失败整体回滚）。 */
   async clearData(scope: PurgeScope): Promise<PurgeCounts> {
     return await this.sql.begin(async (tx) => {
       const deleted = emptyCounts();
@@ -435,7 +424,7 @@ class PostgresRepo implements Repo {
   }
   async purgeCounts(): Promise<PurgeCounts> {
     const out = emptyCounts();
-    // COUNT(*) 在 PG 里是 bigint → 文本返回，必须 Number() 归一
+    // PG returns COUNT(*) (bigint) as a string, so Number() it.
     for (const t of PURGE_ALL_TABLES) {
       const r = await this.sql.unsafe(COUNT_SQL[t], []);
       out[t] = Number(r[0]?.c ?? 0);
@@ -531,7 +520,6 @@ class PostgresRepo implements Repo {
   ): Promise<boolean> {
     return (await this.countAffected(SQL.softDel, [at, by, id])) > 0;
   }
-  /** true = 新建封禁；false = 已存在（本次覆盖更新）。RETURNING (xmax = 0) 区分分支。 */
   async banUpsert(
     ip: string,
     reason: string,
@@ -584,7 +572,6 @@ class PostgresRepo implements Repo {
     return Number(r[0]?.count ?? 1);
   }
   async messageStats(): Promise<{ total: number; retained: number }> {
-    // 口径同 sqlite：物理行（含软删占位），total/retained 恒等
     const r = await this.query<{ total: number | string }>(SQL.stats, []);
     const total = Number(r[0]?.total ?? 0);
     return { total, retained: total };
@@ -606,11 +593,7 @@ class PostgresRepo implements Repo {
   }
 }
 
-/**
- * 纯内存驱动（DB_PROVIDER=memory）：无外部依赖、不持久化、单线程内原子（方法内无 await →
- * 无并发交错，等价 sqlite 事务双写）。语义逐方法镜像 sqlite 实现（排序/裁剪/口径/事件载荷）。
- * 仅限本地/单实例演示与测试 —— Vercel/Serverless 多实例无共享内存，生产由 loadConfig 拒绝。
- */
+/** In-memory driver for local/single-instance use only; loadConfig refuses it in production. */
 interface MemMessage {
   id: number;
   client_id: string;
@@ -639,12 +622,8 @@ class MemoryRepo implements Repo {
   >();
   private rates = new Map<string, number>();
 
-  async bootstrap(): Promise<void> {
-    // 无 schema
-  }
-  async close(): Promise<void> {
-    // 无连接
-  }
+  async bootstrap(): Promise<void> {}
+  async close(): Promise<void> {}
 
   async sendMessageAndEvent(
     m: MessageInput,
@@ -659,7 +638,6 @@ class MemoryRepo implements Repo {
       deleted_at: null,
       deleted_by: null,
     });
-    // 事件载荷由实现在拿到 messageId 后自动构造（同 sqlite/pg：含 id 供客户端去重/对应 delete）
     const eventId = ++this.evSeq;
     this.events.push({
       id: eventId,
@@ -682,7 +660,7 @@ class MemoryRepo implements Repo {
       id: eventId,
       type: "message",
       payload: JSON.stringify({
-        id: `e${eventId}`, // 避开 messages.id 命名空间（同 sqlite/pg 实现）
+        id: `e${eventId}`,
         client_id: m.client_id,
         nick: m.nick,
         text: m.text,
@@ -703,7 +681,7 @@ class MemoryRepo implements Repo {
     return eventId;
   }
   async eventsSince(since: number, limit: number): Promise<EventRow[]> {
-    // events 按 id 递增 push → 过滤保持旧→新序，等价 SQL ORDER BY id ASC LIMIT
+    // push order is id-ASC, so filtering matches SQL ORDER BY id ASC LIMIT.
     return this.events
       .filter((e) => e.id > since)
       .slice(0, limit)
@@ -715,7 +693,7 @@ class MemoryRepo implements Repo {
   async historyBefore(before: number, limit: number): Promise<MessageRow[]> {
     return this.messages
       .filter((r) => r.id < before)
-      .sort((a, b) => b.id - a.id) // 新→旧，等价 ORDER BY id DESC
+      .sort((a, b) => b.id - a.id) // matches ORDER BY id DESC
       .slice(0, limit)
       .map(mapMessage);
   }
@@ -735,7 +713,7 @@ class MemoryRepo implements Repo {
     if (!row) return false;
     row.deleted_at = at;
     row.deleted_by = by;
-    row.text = ""; // 同 sqlite：清 text（mapMessage 依 deleted_at 归 null/deleted）
+    row.text = ""; // same as sqlite: mapMessage derives null from deleted_at
     return true;
   }
   async banUpsert(
@@ -755,7 +733,7 @@ class MemoryRepo implements Repo {
     return b ? { reason: b.reason, created_at: b.created_at } : null;
   }
   async banList(limit: number, offset: number): Promise<BanRow[]> {
-    // created_at DESC；同刻 tie-break ip DESC（确定性，优于 sqlite 未定义序）
+    // created_at DESC then ip DESC: deterministic ties (sqlite order is undefined).
     return [...this.bans.entries()]
       .map(([ip, b]) => ({ ip, reason: b.reason, created_at: b.created_at }))
       .sort(
@@ -787,7 +765,6 @@ class MemoryRepo implements Repo {
     return count;
   }
   async messageStats(): Promise<{ total: number; retained: number }> {
-    // 物理行口径（同 sqlite/pg）：软删不删行 → total/retained 恒等
     const total = this.messages.length;
     return { total, retained: total };
   }
@@ -830,7 +807,7 @@ class MemoryRepo implements Repo {
     return this.countsNow();
   }
   async clearData(scope: PurgeScope): Promise<PurgeCounts> {
-    // 单线程 JS：逐表清空不具备“半清”窗口，无需事务
+    // Single-threaded: per-table clears have no half-clear window, so no tx is needed.
     const before = this.countsNow();
     const deleted = emptyCounts();
     for (const t of PURGE_TABLES[scope]) {

@@ -1,7 +1,4 @@
-// 端到端冒烟：真实启动服务器（spawn `bun src/index.ts`，临时 file: SQLite 库）
-// 跨功能链：meta → SSE 开流(presence) → POST 消息(message 事件) → admin 登录 →
-// 软删(delete 事件) → 封禁(禁言不禁看：被禁 IP 403、其他 IP 消息仍广播到已开流) → stats → 历史视图 → 持久化复查
-// 运行：bun tests/e2e/smoke.ts（仓库根由脚本位置相对推导，不依赖调用时 cwd）
+// End-to-end smoke: real server on a temp SQLite file, exercising the full chain.
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,14 +6,14 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRepo } from "../../src/lib/repo";
 
-// 仓库根 = 本文件上溯两级（tests/e2e/ → repo 根）；勿硬编码绝对路径
+// Repo root derived from this file: never hardcode absolute paths.
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const tmp = mkdtempSync(join(tmpdir(), "wl-smoke-"));
 const dbPath = join(tmp, "smoke.db");
-let child: ChildProcess | null = null; // 模块级：异常路径也须杀子进程 + 清理临时库
+let child: ChildProcess | null = null; // Module scope: the error path must still clean up
 const ADMIN_SECRET = "smoke-" + crypto.randomUUID();
-const XFF_A = "9.9.9.8"; // 被禁 IP（先聊后封）
-const XFF_B = "9.9.9.9"; // 旁观看客（始终可聊）
+const XFF_A = "9.9.9.8"; // Banned mid-run: chats first, then banned
+const XFF_B = "9.9.9.9"; // Bystander: never banned
 
 let fails = 0;
 const check = (name: string, cond: boolean, extra = "") => {
@@ -49,7 +46,7 @@ function parseSseBlocks(raw: string): { type: string; data: any }[] {
   return out;
 }
 
-/** SIGTERM 停服并等待退出（先挂监听再 kill，防竞态；最多等 3s） */
+/** SIGTERM the server and wait for exit; listener attached before kill to avoid a race. */
 async function stopServer(): Promise<void> {
   if (child && child.exitCode === null) {
     const exited = new Promise<void>((r) => child!.once("exit", () => r()));
@@ -108,7 +105,7 @@ async function main() {
   });
   let cookie = "";
 
-  // 0. 就绪探测：首个请求触发幂等建表，meta 200 即认为服务可用（日志匹配外的显式门）
+  // First request triggers idempotent DDL; 200 means the server is ready.
   {
     let ok = false;
     for (let i = 0; i < 50 && !ok; i++) {
@@ -116,14 +113,14 @@ async function main() {
         const res = await fetch(`${base}/api/meta`, { headers: h(XFF_A) });
         ok = res.status === 200;
       } catch {
-        /* 未就绪，重试 */
+        /* Not ready yet; the loop retries. */
       }
       if (!ok) await new Promise((r) => setTimeout(r, 200));
     }
     check("meta 就绪探测 200", ok);
   }
 
-  // 1. meta（无 DB 写依赖的启动探针 + cfg 经 env 生效证据）
+  // /api/meta also proves that env-derived config reached the app.
   {
     const res = await fetch(`${base}/api/meta`, { headers: h(XFF_A) });
     const b = await json(res);
@@ -139,7 +136,7 @@ async function main() {
     check("meta presence ttl_s=45", b?.presence?.ttl_s === 45);
   }
 
-  // 2. 开流（client B）→ 首帧 presence（runStream 连接即初始 upsert+count）
+  // First frame is presence: runStream upserts and counts on connect.
   const streamAbort = new AbortController();
   const sseRes = await fetch(
     `${base}/api/stream?client_id=22222222-3333-4444-8555-666666666666`,
@@ -170,7 +167,7 @@ async function main() {
       sseBuf += decoder.decode(value, { stream: true });
       const parsed = parseSseBlocks(sseBuf);
       if (parsed.length) {
-        // 已解析即从缓冲移除（保留残余半帧）
+        // Drop parsed frames, keep the trailing partial frame.
         const lastIdx = sseBuf.lastIndexOf("\n\n");
         sseBuf = lastIdx >= 0 ? sseBuf.slice(lastIdx + 2) : sseBuf;
         seen.push(...parsed);
@@ -190,7 +187,6 @@ async function main() {
     JSON.stringify(presence?.data),
   );
 
-  // 3. POST 消息 → SSE 收到 message 事件（id 一致、text 一致）
   const msgText1 = "hello-e2e-1";
   const post1 = await fetch(`${base}/api/messages`, {
     method: "POST",
@@ -221,7 +217,6 @@ async function main() {
     JSON.stringify(msgEvt?.data),
   );
 
-  // 4. admin login → cookie
   {
     const res = await fetch(`${base}/api/admin/login`, {
       method: "POST",
@@ -240,7 +235,6 @@ async function main() {
     );
   }
 
-  // 5. 软删 → SSE delete 事件
   {
     const res = await fetch(`${base}/api/admin/messages/${msgId}`, {
       method: "DELETE",
@@ -254,7 +248,7 @@ async function main() {
     check("SSE delete 事件到达", delEvt !== null, JSON.stringify(delEvt?.data));
   }
 
-  // 6. 封禁 XFF_A（禁言不禁看 D5）
+  // Mute-only: a banned IP cannot post but already-open streams keep receiving.
   {
     const res = await fetch(`${base}/api/admin/bans`, {
       method: "POST",
@@ -309,7 +303,7 @@ async function main() {
     );
   }
 
-  // 7. stats（含 mode full / total / estimate_bytes；SSE 客户端 B 仍在窗内 → online>=1）
+  // Client B's stream is still inside the presence TTL, so online >= 1.
   {
     const res = await fetch(`${base}/api/admin/stats`, {
       headers: { ...h(XFF_A), cookie },
@@ -331,7 +325,6 @@ async function main() {
     );
   }
 
-  // 8. 历史视图：msgId 已软删（deleted:true, text:null）
   {
     const res = await fetch(`${base}/api/messages?limit=5`, {
       headers: h(XFF_A),
@@ -346,7 +339,7 @@ async function main() {
     check("历史模式 full 透出", b?.mode === "full");
   }
 
-  // 9. 示例客户端实跑（docs/integration.md 指向的 examples/client.mjs 必须真的能用）
+  // The shipped example client is exercised so it cannot rot away from the API.
   {
     const cli = spawn("bun", ["examples/client.mjs", base, "冒烟"], {
       cwd: ROOT,
@@ -357,7 +350,7 @@ async function main() {
     cli.stdout!.on("data", (d) => (cliOut += d.toString()));
     cli.stderr!.on("data", (d) => (cliOut += d.toString()));
     const exited = new Promise<void>((r) => cli.on("exit", () => r()));
-    // 脚本内部：建流 → 1.5s 后发言 → 经 SSE 收到自己的消息；给 8s 窗口后收尾
+    // The client streams, posts after 1.5s and echoes via SSE; 8s is enough.
     await Promise.race([exited, new Promise<void>((r) => setTimeout(r, 8000))]);
     if (cli.exitCode === null) cli.kill("SIGTERM");
     const lines = cliOut.split("\n").filter(Boolean);
@@ -369,7 +362,6 @@ async function main() {
     );
   }
 
-  // 10. 收尾：关流、停服、持久化复查
   streamAbort.abort();
   await stopServer();
   {
@@ -405,12 +397,12 @@ async function main() {
 
 main().catch(async (e) => {
   console.error("E2E 异常：", e);
-  // 异常路径：杀子进程 + 清理临时库（防孤儿进程 / /tmp 泄漏）
+  // Error path: kill the child and remove the temp DB.
   await stopServer().catch(() => {});
   try {
     rmSync(tmp, { recursive: true, force: true });
   } catch (err) {
-    // best-effort：临时目录清理失败（如文件被占用）不掩盖原始错误，仅记录
+    // Best-effort: cleanup must never mask the original error.
     console.error("清理临时目录失败（忽略）：", err);
   }
   process.exit(2);

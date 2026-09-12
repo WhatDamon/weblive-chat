@@ -2,8 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { fileURLToPath } from "node:url";
 import { loadWordFilter } from "../../src/lib/wordfilter";
 
-// 数据回归护栏：护的是 data/banned/basic 这份随包分发的词库本身
-// （有人手改词表时，既能挡住「词条失效」，也能挡住「常用词混入造成误伤」）
+// Guards the shipped wordlist itself: catches dead entries and false positives.
 const DIR = fileURLToPath(new URL("../../data/banned", import.meta.url));
 
 describe("内置精选词库", () => {

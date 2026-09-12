@@ -76,14 +76,11 @@ $("nick").value = store.get("wl.nick") || "";
 $("nick").addEventListener("input", () => store.set("wl.nick", $("nick").value.trim()));
 
 const listEl = $("messages");
-const seen = new Map();          // id -> li (dedupe across history/live; ids are strings)
-let esClosed = false;            // read by the connect loop
-// Dedupe and cursor are separate concerns: rendering always dedupes via the seen Map (both
-// numeric history ids and "e<id>" live ids), while `since` is only the reconnect resume bound,
-// advanced by bumpSince for numeric ids (skipping "e<id>" live ids).
+const seen = new Map();          // id -> li (ids are strings)
+let esClosed = false;
+// seen dedupes all ids; `since` is only the resume bound, advanced for numeric ids.
 
-const NOTE = "placeholder";
-// Empty-state placeholder (a single muted li, present only while no real message is rendered).
+const NOTE = "placeholder"; // empty-state marker
 function setNote(text) {
   let p = listEl.querySelector("." + NOTE);
   if (text == null) { if (p) p.remove(); return; }
@@ -103,7 +100,7 @@ const setStatus = (text, cls) => { const s = $("status"); s.textContent = text; 
 function renderMessage(p) {
   if (seen.has(p.id)) return;
   const li = document.createElement("li");
-  li.dataset.at = String(p.created_at); // reused to rebuild the placeholder on a live delete
+  li.dataset.at = String(p.created_at); // reused when a live delete rebuilds the row
   const ts = document.createElement("span");
   ts.className = "muted";
   ts.textContent = timeOf(p.created_at);
@@ -120,12 +117,11 @@ function renderMessage(p) {
     li.append(who, body, ts);
   }
   seen.set(p.id, li);
-  if (listEl.querySelector("." + NOTE)) setNote(null); // first real message clears the placeholder
+  if (listEl.querySelector("." + NOTE)) setNote(null);
   listEl.prepend(li);   // single timeline: newest on top
-  while (listEl.children.length > 200) listEl.lastChild.remove(); // trim the oldest (bottom)
+  while (listEl.children.length > 200) listEl.lastChild.remove();
 }
 
-// Live soft delete (delete event, payload {id}): rebuild the node as a deleted placeholder.
 function markDeleted(id) {
   const li = seen.get(String(id));
   if (!li) return;
@@ -147,13 +143,13 @@ async function loadHistory() {
   setNote(COPY.chat.noteLoading);
   try {
     const j = await fetch("/api/messages?limit=50").then((r) => r.json());
-    // API returns newest-first; prepending needs oldest-first, so reverse before rendering.
+    // API returns newest-first; prepending needs oldest-first
     const msgs = j.messages.slice().reverse();
     for (const m of msgs) renderMessage(m);
     if (j.mode === "ephemeral") setNote(COPY.chat.noteEphemeral);
     else if (!msgs.length) setNote(COPY.chat.noteEmpty);
     else setNote(null);
-  } catch { setNote(null); /* network/JSON errors are silent: the SSE side recovers */ }
+  } catch { setNote(null); /* silent: the SSE side recovers */ }
 }
 
 async function send() {
@@ -170,7 +166,7 @@ async function send() {
     });
     const j = await res.json().catch(() => null);
     if (!res.ok) {
-      $("text").value = text; // restore input on failure
+      $("text").value = text;
       const code = j && j.error && j.error.code;
       notice((j && j.error && j.error.message) || fill(COPY.chat.sendFailed, { status: res.status }), true);
       // 403 has two causes: muted (banned) vs origin rejected - do not conflate them.
@@ -184,8 +180,7 @@ async function send() {
   } catch { $("text").value = text; notice(COPY.chat.sendNetworkError, true); }
 }
 
-// SSE read loop with auto-reconnect (1s later, resuming from the `since` cursor).
-let since = 0; // 0 = from the start; advanced monotonically by bumpSince
+let since = 0;
 async function connect() {
   while (!esClosed) {
     setStatus(COPY.chat.statusConnecting);
@@ -211,7 +206,7 @@ async function connect() {
           handleBlock(block);
         }
       }
-    } catch { /* reconnect below */ }
+    } catch {}
     setStatus(COPY.chat.statusReconnecting, "bad");
     await sleep(1000);
   }
@@ -222,7 +217,7 @@ function handleBlock(block) {
     if (line.startsWith("event:")) type = line.slice(6).trim();
     else if (line.startsWith("data:")) { try { data = JSON.parse(line.slice(5).trim()); } catch { data = null; } }
   }
-  if (data === null) return; // ": ping" and other comment-only blocks carry no data
+  if (data === null) return; // ": ping" blocks carry no data
   if (type === "message" && data && data.id !== undefined) {
     renderMessage(data);
     bumpSince(data.id);
@@ -243,8 +238,7 @@ function handleBlock(block) {
   }
 }
 
-// Only numeric ids advance the resume bound ("e<eventId>" live ids are skipped): `since` is a
-// conservative lower bound, so replays are absorbed by the seen Map instead of dropping events.
+// Numeric ids only: a conservative bound replays, but never drops events.
 function bumpSince(id) {
   const n = Number(id);
   if (Number.isInteger(n) && n > since) since = n;

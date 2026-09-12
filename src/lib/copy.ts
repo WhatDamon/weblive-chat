@@ -1,20 +1,7 @@
-/**
- * 全站用户可见文案的唯一来源。
- *
- * 改文案只改本文件，页面与路由里没有字面量：
- *  - 服务端（错误信封、路由提示）：import { COPY } 直接用；
- *  - 内置页面 /demo.html、/admin：响应时由 src/routes/pages.ts 注入——
- *      · HTML 中 {{admin.loginBtn}} 这类占位符按本文件替换；
- *      · 页面脚本通过 window.COPY.admin.xxx 读取。
- *  - "{n}" 占位符由 fill(模板, { n: 值 }) 在运行时填充。
- *
- * 约定：
- *  - error.* 的键名必须与 src/lib/http.ts 的 ErrCode 完全一致（缺一个会编译失败）；
- *  - {{...}} 写错键名、或脚本引用了不存在的 COPY 键，会被 tests/unit/copy.test.ts 拦下；
- *  - 页面文件中出现任何中文同样会被该测试判失败（文案不允许回流到页面）。
- */
+// Single source of every user-visible string: API errors + both built-in pages.
+// Injected at render time; keep "{n}" placeholders, and keys are referenced by pages/tests.
 export const COPY = {
-  // ══════════ 1. 错误信封 message（键名 = error.code） ══════════
+  // Keys must match ErrCode in src/lib/http.ts (enforced by the compiler).
   error: {
     invalid_body: "请求体缺失或不是 JSON",
     invalid_uuid: "client_id 必须是合法 UUID",
@@ -36,7 +23,7 @@ export const COPY = {
     db_unavailable: "数据库暂不可用",
   },
 
-  // ══════════ 2. 路由级补充提示（覆盖上表默认 message） ══════════
+  // Route-level messages that replace the default error text.
   route: {
     limitOffsetInt: "limit/offset 必须是整数",
     ipInvalid: "ip 不合法",
@@ -49,18 +36,19 @@ export const COPY = {
     pageMissing: "页面文件缺失：{file}",
   },
 
-  // ══════════ 3. 清空数据（危险操作） ══════════
+  // Danger-zone copy: typed confirmation phrases and scope descriptions.
   purge: {
     phraseChat: "清空聊天记录",
     phraseFull: "清空全部数据",
     descChat: "聊天记录（消息与事件），保留封禁名单、在线状态与限流计数",
-    descFull: "全部数据（消息、事件、在线状态、限流计数、封禁名单），相当于恢复出厂",
+    descFull:
+      "全部数据（消息、事件、在线状态、限流计数、封禁名单），相当于恢复出厂",
     tokenInvalid: "预检已失效，请重新预检",
     tokenScope: "预检范围已变更，请重新预检",
     tokenIp: "预检与本机 IP 不一致，请重新预检",
   },
 
-  // ══════════ 4. 管理后台 /admin ══════════
+  // /admin page copy ({{admin.*}} placeholders and window.COPY.admin.*).
   admin: {
     title: "WebLive Chat · 管理后台",
     heading: "WebLive Chat 管理后台",
@@ -146,7 +134,7 @@ export const COPY = {
     actionFailed: "操作失败：{msg}",
   },
 
-  // ══════════ 5. 聊天室 /demo.html ══════════
+  // /demo.html chat page copy ({{chat.*}} placeholders and window.COPY.chat.*).
   chat: {
     title: "WebLive Chat · 实时聊天",
     heading: "WebLive Chat",
@@ -190,18 +178,17 @@ export const COPY = {
   },
 } as const;
 
-/** 模板插值：把 "{n}" 换成 vars.n；未提供的占位符原样保留。 */
+/** Substitutes {name} placeholders; unknown names are left as-is. */
 export function fill(
   template: string,
   vars: Record<string, string | number>,
 ): string {
-  return template.replace(
-    /\{(\w+)\}/g,
-    (m, k: string) => (k in vars ? String(vars[k]) : m),
+  return template.replace(/\{(\w+)\}/g, (m, k: string) =>
+    k in vars ? String(vars[k]) : m,
   );
 }
 
-/** 按点分路径取文案（供页面渲染替换 {{a.b}} 占位符）；非字符串返回 undefined。 */
+/** Resolves a dotted copy path; undefined unless it lands on a string. */
 export function lookupCopy(path: string): string | undefined {
   let node: unknown = COPY;
   for (const seg of path.split(".")) {

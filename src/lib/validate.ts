@@ -5,7 +5,7 @@ export const UUID_RE =
 export const validUuid = (s: string) => UUID_RE.test(s);
 
 export function sanitizeText(s: string): string {
-  // 剥离控制字符（保留常见可见文本；SSE 的 \n 会被事件 data 行语义化，前端自处理）
+  // Strips control chars; newlines cannot survive SSE data lines anyway.
   return s.replace(/[\u0000-\u001f\u007f]/g, "").trim();
 }
 
@@ -85,7 +85,7 @@ export function validateMessageBody(
   return { ok: true, nick, text };
 }
 
-// 未注入词库（单测/直接调用）时按显式词表即时建树，并按词表内容缓存复用
+// Fallback matcher used when no filter is injected (tests, direct calls); cached per word list.
 const matcherCache = new Map<string, WordFilter>();
 function matcherFor(words: readonly string[]): WordFilter {
   const key = words.join("\u0000");

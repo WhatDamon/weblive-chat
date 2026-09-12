@@ -1,18 +1,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
 /**
- * Vercel 入口形态回归护栏：锁定入口导出形态，避免整站请求挂起。
- *
- * Vercel Node 运行时的 Web handler 只接受：
- *   1. `export default { fetch(request) }`
- *   2. 具名 `export const GET/POST/...`
- *   3. 自带 `.fetch` 的框架实例（如 `export default honoApp`）
- * 裸函数 `export default async (req) => Response` 会被当成旧式 `(req, res)` 处理器：
- * 函数不写 `res` → 响应永不返回 → 整站 0 字节挂起直到函数超时（连静态页也挂，
- * 因为 vercel.json 的 catch-all 把所有路由都指向该函数）。
- *
- * 本文件同时充当"按 Vercel 调用约定"的烟测：直接以 Web `Request` 调用
- * `mod.default.fetch(...)`，即运行时真正走的路径（不经过 Bun.serve）。
+ * Vercel Node accepts only a Web handler ({ fetch }), named GET/POST exports, or a framework
+ * instance with .fetch; a bare function export is called as legacy (req,res) and never flushes.
  */
 
 const mod = (await import("../../src/index")) as unknown as {
@@ -21,8 +11,7 @@ const mod = (await import("../../src/index")) as unknown as {
 
 const CLIENT = "11111111-2222-4333-8444-555555555555";
 
-/** 环境隔离：只在本文件的测试窗口内设置 env（bun 按文件顺序执行，afterAll 先于下个文件），
- *  且在 beforeAll 里完成首次调用把 app 实例缓存住，afterAll 立刻归还 env。 */
+// env must be saved/restored around this file: bun shares process.env across test files
 const KEYS = [
   "DB_PROVIDER",
   "DATABASE_URL",
@@ -37,7 +26,7 @@ beforeAll(async () => {
   process.env.DATABASE_URL = "";
   process.env.NODE_ENV = "development";
   process.env.ADMIN_SECRET = "entry-test-secret";
-  // 预热：入口懒建单例在此完成，后续断言不再依赖 process.env
+  // warm the lazy singleton while env is set
   await (mod.default as { fetch: (r: Request) => Promise<Response> }).fetch(
     new Request("http://localhost/api/meta"),
   );
@@ -55,7 +44,6 @@ describe("Vercel 入口导出形态", () => {
     const d = mod.default as { fetch?: unknown };
     expect(typeof mod.default).toBe("object");
     expect(typeof d.fetch).toBe("function");
-    // 裸函数形态会命中这里（会被当作旧式 (req, res) 处理器调用）
     expect(typeof mod.default).not.toBe("function");
   });
 

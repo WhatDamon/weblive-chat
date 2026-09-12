@@ -3,19 +3,15 @@ import { readFileSync } from "node:fs";
 import { COPY, fill, lookupCopy } from "../../src/lib/copy";
 import { renderPage } from "../../src/routes/pages";
 
-/**
- * 文案护栏：保证「用户可见文案只在 src/lib/copy.ts 一处」这一约定不被破坏。
- *  - 页面文件里出现任何中文字符 → 失败（说明文案回流到页面）；
- *  - 页面的 {{a.b}} 占位符 / COPY.a.b 引用指向不存在的键 → 失败（拼写错误）；
- *  - 渲染后仍有 {{...}} 残留、或注入脚本丢失 → 失败。
- */
+/** Guards that page copy lives only in src/lib/copy.ts: no CJK in pages, no dangling keys. */
 
 const PAGES = ["admin.html", "demo.html"] as const;
 const pageSource = (f: string) =>
   readFileSync(new URL(`../../public/${f}`, import.meta.url), "utf8");
 
-/** 汉字、CJK 标点、全角符号、弯引号、省略号、破折号 */
-const CJK_CHAR = /[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef\u2018-\u201f\u2026\u2014]/;
+/** Any CJK ideograph or CJK/fullwidth punctuation. */
+const CJK_CHAR =
+  /[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef\u2018-\u201f\u2026\u2014]/;
 
 describe("文案唯一来源 (src/lib/copy.ts)", () => {
   test("所有文案均非空", () => {
@@ -66,11 +62,11 @@ describe("文案唯一来源 (src/lib/copy.ts)", () => {
       expect(out, `${f} 渲染后仍有未替换的占位符`).not.toContain("{{");
       expect(out).toContain("window.COPY=");
       expect(out).toContain("window.fill=");
-      // 注入的 JSON 必须与 copy.ts 完全一致（页面脚本据此渲染）
+      // Injected JSON must equal copy.ts exactly: page scripts render from it.
       const injected = /window\.COPY=(\{[\s\S]*?\});window\.fill=/.exec(out);
       expect(injected, `${f} 未找到注入脚本`).not.toBeNull();
       expect(JSON.parse(injected![1])).toEqual(COPY);
-      // 标签内的 "<" 已转义，避免文案包含 </script 时提前闭合脚本
+      // "<" is escaped so copy containing </script cannot close the tag early.
       expect(injected![1]).not.toContain("<");
     }
   });
@@ -83,7 +79,7 @@ describe("文案唯一来源 (src/lib/copy.ts)", () => {
 
   test("lookupCopy 只返回文案字符串", () => {
     expect(lookupCopy("admin.loginBtn")).toBe(COPY.admin.loginBtn);
-    expect(lookupCopy("admin")).toBeUndefined(); // 分组不是文案
+    expect(lookupCopy("admin")).toBeUndefined();
     expect(lookupCopy("nope.nope")).toBeUndefined();
   });
 });
