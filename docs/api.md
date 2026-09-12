@@ -121,7 +121,7 @@
 | 400 | `nick_empty` / `nick_too_long` / `text_empty` / `text_too_long` | 长度/空值校验 |
 | 400 | `banned_word` | 昵称或内容命中违禁词（归一化子串匹配：忽略全角/空白/标点/零宽字符；不回显命中词） |
 | 400 | `invalid_confirm` | 危险操作确认短语不匹配（需逐字输入服务端下发的短语） |
-| 400 | `invalid_token` | 危险操作预检令牌无效 / 已过期 / 档位或 IP 不符 / 已被使用 |
+| 400 | `invalid_token` | 危险操作预检已失效（令牌无效/已过期/范围或 IP 不符/已被使用），需重新预检 |
 | 401 | `invalid_secret` / `unauthorized` | 口令错 / 会话缺失·过期·被篡改 |
 | 403 | `banned` | 该 IP 被禁言（附 `reason`） |
 | 403 | `origin_not_allowed` | Origin 不在名单；响应体附 `origin`（被拒来源）与 `allowed_origins_count` |

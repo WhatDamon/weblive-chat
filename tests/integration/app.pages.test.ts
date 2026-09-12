@@ -19,9 +19,15 @@ describe("静态页", () => {
     const demo = await (await app.request("/demo.html")).text();
     expect(demo).toContain('id="messages"');
     expect(demo).toContain("wl.client"); // client_id 持久化键
+    // 文案在响应时才注入：页面不残留占位符，且带上 window.COPY/window.fill
+    expect(demo).not.toContain("{{");
+    expect(demo).toContain("window.COPY=");
+    expect(demo).toContain("window.fill=");
     const admin = await (await app.request("/admin")).text();
-    expect(admin).toContain("ADMIN_SECRET");
+    expect(admin).toContain('id="pPreviewBtn"');
     expect(admin).toContain("/api/admin/login");
+    expect(admin).not.toContain("{{");
+    expect(admin).toContain("window.COPY=");
     const alias = await app.request("/admin.html");
     expect(alias.status).toBe(200);
   });

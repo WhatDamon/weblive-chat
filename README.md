@@ -116,6 +116,14 @@ bun run dev                   # http://localhost:3000
 
 换 provider = 改 `DB_PROVIDER` + `DATABASE_URL` 两个值（schema 为跨方言子集，启动自动建表），**无需改代码或跑迁移**。
 
+## 文案
+
+所有用户可见文案（接口错误消息 + 内置聊天页 / 管理页）集中在 **`src/lib/copy.ts`** 一处，改文案只改这个文件：
+
+- 服务端（错误信封、路由提示）直接引用该文件；
+- 内置页面在响应时才注入：HTML 中写作 `{{admin.loginBtn}}` 占位符，页面脚本通过 `window.COPY.admin.loginBtn` 读取，带 `{n}` 的模板用 `fill(COPY.admin.purgeWait, { n: 3 })` 填充；
+- `tests/unit/copy.test.ts` 会拦住三类失误：页面文件里出现中文（文案回流页面）、`{{...}}` 或 `COPY.x.y` 键名写错、注入脚本失效。
+
 ## 部署到 Vercel
 
 本项目是**单函数应用**（`vercel.json` 已配好 `@vercel/node` 构建 `src/index.ts`、`maxDuration: 300`、`public/**` 打进函数），零构建、零手动迁移。步骤：

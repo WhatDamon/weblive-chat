@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>WebLive Chat · 实时聊天</title>
+<title>{{chat.title}}</title>
 <style>
   :root { color-scheme: light dark; }
   body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif; margin: 0; background: #f4f5f7; color: #1c1e21; }
@@ -32,18 +32,18 @@
 <body>
 <div class="wrap">
   <header>
-    <h1>WebLive Chat</h1>
-    <span>在线 <b id="online">?</b> 人</span>
-    <span class="muted">本机 IP：<span id="ip">…</span></span>
-    <a href="/admin">管理后台</a>
-    <span id="status">连接中…</span>
+    <h1>{{chat.heading}}</h1>
+    <span>{{chat.onlinePrefix}} <b id="online">?</b> {{chat.onlineSuffix}}</span>
+    <span class="muted">{{chat.ipLabel}}<span id="ip"></span></span>
+    <a href="/admin">{{chat.adminLink}}</a>
+    <span id="status">{{chat.statusConnecting}}</span>
   </header>
 
   <div class="card">
     <div class="row">
-      <input type="text" id="nick" placeholder="昵称（Enter 发送）" maxlength="24">
-      <input type="text" id="text" placeholder="说点什么…" maxlength="1000">
-      <button class="primary" id="send">发送</button>
+      <input type="text" id="nick" placeholder="{{chat.nickPlaceholder}}" maxlength="24">
+      <input type="text" id="text" placeholder="{{chat.textPlaceholder}}" maxlength="1000">
+      <button class="primary" id="send">{{chat.sendBtn}}</button>
     </div>
     <div id="notice" class="muted"></div>
   </div>
@@ -53,17 +53,19 @@
   </div>
 
   <details class="card">
-    <summary>使用说明</summary>
+    <summary>{{chat.helpSummary}}</summary>
     <ul class="muted">
-      <li><b>免登录</b>：无需注册，直接发言；昵称与客户端标识仅保存在本机浏览器，同一浏览器多标签视为同一人在线。</li>
-      <li><b>实时</b>：消息与在线人数经 SSE 长连接即时推送；网络中断后自动重连并续传，不会丢消息。</li>
-      <li><b>管理</b>：管理员可在 <a href="/admin">管理后台</a> 删除消息或封禁 IP；被封禁者无法发言，但仍可继续观看。</li>
+      <li>{{chat.help1}}</li>
+      <li>{{chat.help2}}</li>
+      <li>{{chat.help3}}</li>
     </ul>
   </details>
 </div>
 
+<!--COPY-->
 <script>
 "use strict";
+const COPY = window.COPY, fill = window.fill;
 const $ = (id) => document.getElementById(id);
 const store = {
   get(k) { try { return localStorage.getItem(k); } catch { return null; } },
@@ -74,14 +76,14 @@ $("nick").value = store.get("wl.nick") || "";
 $("nick").addEventListener("input", () => store.set("wl.nick", $("nick").value.trim()));
 
 const listEl = $("messages");
-const seen = new Map();          // id → li（跨历史/实时去重，消息 id 字符串键）
-let esClosed = false;            // 顶部声明（connect 循环读）
-// 去重与游标分工：渲染去重统一走 seen Map（数字与 "e前缀" 直播 id 一律入 Map；数字水位
-// 渲染跳过会误删历史旧消息，故不采用）；since 仅作重连续传下界（见 handleBlock），只在
-// message/delete 事件命中纯数字 id 时单调推进，与渲染去重互不干扰。
+const seen = new Map();          // id -> li (dedupe across history/live; ids are strings)
+let esClosed = false;            // read by the connect loop
+// Dedupe and cursor are separate concerns: rendering always dedupes via the seen Map (both
+// numeric history ids and "e<id>" live ids), while `since` is only the reconnect resume bound,
+// advanced by bumpSince for numeric ids (skipping "e<id>" live ids).
 
 const NOTE = "placeholder";
-// 空态提示占位（单个 muted li，仅在列表无真消息时存在；首个真消息到达即移除）
+// Empty-state placeholder (a single muted li, present only while no real message is rendered).
 function setNote(text) {
   let p = listEl.querySelector("." + NOTE);
   if (text == null) { if (p) p.remove(); return; }
@@ -101,29 +103,29 @@ const setStatus = (text, cls) => { const s = $("status"); s.textContent = text; 
 function renderMessage(p) {
   if (seen.has(p.id)) return;
   const li = document.createElement("li");
-  li.dataset.at = String(p.created_at); // 供实时 delete 事件重建占位时复用时间戳
+  li.dataset.at = String(p.created_at); // reused to rebuild the placeholder on a live delete
   const ts = document.createElement("span");
   ts.className = "muted";
   ts.textContent = timeOf(p.created_at);
   if (p.deleted) {
     const d = document.createElement("span");
     d.className = "del";
-    d.textContent = "（已删除）";
+    d.textContent = COPY.chat.msgDeleted;
     li.append(d, ts);
   } else {
     const who = document.createElement("b");
-    who.textContent = p.nick + "：";
+    who.textContent = fill(COPY.chat.msgAuthor, { nick: p.nick });
     const body = document.createElement("span");
     body.textContent = p.text;
     li.append(who, body, ts);
   }
   seen.set(p.id, li);
-  if (listEl.querySelector("." + NOTE)) setNote(null); // 首个真消息到达即清空提示占位
-  listEl.prepend(li);   // 统一时间线「新在上、旧在下」：历史与实时都前插
-  while (listEl.children.length > 200) listEl.lastChild.remove(); // 修剪最旧（底部）
+  if (listEl.querySelector("." + NOTE)) setNote(null); // first real message clears the placeholder
+  listEl.prepend(li);   // single timeline: newest on top
+  while (listEl.children.length > 200) listEl.lastChild.remove(); // trim the oldest (bottom)
 }
 
-// 实时软删（delete 事件，服务端 payload {id}）：命中节点重建为「（已删除）」占位，无需刷新
+// Live soft delete (delete event, payload {id}): rebuild the node as a deleted placeholder.
 function markDeleted(id) {
   const li = seen.get(String(id));
   if (!li) return;
@@ -131,7 +133,7 @@ function markDeleted(id) {
   li.textContent = "";
   const d = document.createElement("span");
   d.className = "del";
-  d.textContent = "（已删除）";
+  d.textContent = COPY.chat.msgDeleted;
   li.append(d);
   if (at) {
     const ts = document.createElement("span");
@@ -142,21 +144,21 @@ function markDeleted(id) {
 }
 
 async function loadHistory() {
-  setNote("加载历史…");
+  setNote(COPY.chat.noteLoading);
   try {
     const j = await fetch("/api/messages?limit=50").then((r) => r.json());
-    // 时间线约定「新在上、旧在下」：API 返回新→旧，逐个前插会排成旧在上 → 先逆转为旧→新再前插
+    // API returns newest-first; prepending needs oldest-first, so reverse before rendering.
     const msgs = j.messages.slice().reverse();
     for (const m of msgs) renderMessage(m);
-    if (j.mode === "ephemeral") setNote("（存储容量已达上限，当前仅实时广播，不再保存历史）");
-    else if (!msgs.length) setNote("（还没有消息，来说第一句吧）");
+    if (j.mode === "ephemeral") setNote(COPY.chat.noteEphemeral);
+    else if (!msgs.length) setNote(COPY.chat.noteEmpty);
     else setNote(null);
-  } catch { setNote(null); /* 网络/JSON 错误静默，等 SSE 侧自行恢复 */ }
+  } catch { setNote(null); /* network/JSON errors are silent: the SSE side recovers */ }
 }
 
 async function send() {
   const text = $("text").value.trim();
-  const nick = ($("nick").value.trim() || "路人").slice(0, 24);
+  const nick = ($("nick").value.trim() || COPY.chat.defaultNick).slice(0, 24);
   if (!text) return;
   $("text").value = "";
   store.set("wl.nick", nick);
@@ -167,37 +169,36 @@ async function send() {
       body: JSON.stringify({ client_id: cid, nick, text }),
     });
     const j = await res.json().catch(() => null);
-    // 发送失败/网络异常时的提示区写入（notice 区纯文本）
     if (!res.ok) {
-      $("text").value = text; // 失败还原输入
+      $("text").value = text; // restore input on failure
       const code = j && j.error && j.error.code;
-      notice((j && j.error && j.error.message) || res.status + " 发送失败", true);
-      // 403 有两个成因：被禁言（banned）与来源被拒（origin_not_allowed）——不可混为一谈
-      if (code === "banned") setStatus("本机已被禁言", "bad");
-      else if (code === "origin_not_allowed" || code === "missing_origin") setStatus("本页来源未被服务器允许", "bad");
-      else if (res.status === 403) setStatus("发送被拒绝（403）", "bad");
-      else if (res.status === 429) setStatus("发送过于频繁", "bad");
+      notice((j && j.error && j.error.message) || fill(COPY.chat.sendFailed, { status: res.status }), true);
+      // 403 has two causes: muted (banned) vs origin rejected - do not conflate them.
+      if (code === "banned") setStatus(COPY.chat.statusBanned, "bad");
+      else if (code === "origin_not_allowed" || code === "missing_origin") setStatus(COPY.chat.statusOriginDenied, "bad");
+      else if (res.status === 403) setStatus(COPY.chat.statusForbidden, "bad");
+      else if (res.status === 429) setStatus(COPY.chat.statusTooFast, "bad");
       return;
     }
     notice("");
-  } catch { $("text").value = text; notice("网络异常，发送失败", true); }
+  } catch { $("text").value = text; notice(COPY.chat.sendNetworkError, true); }
 }
 
-// —— SSE 读取与自动重连（断线 1s 后携带 since 游标续传）——
-let since = 0; // SSE 续传游标：0 = 从头开始；由 handleBlock 的 bumpSince 单调推进（见下）
+// SSE read loop with auto-reconnect (1s later, resuming from the `since` cursor).
+let since = 0; // 0 = from the start; advanced monotonically by bumpSince
 async function connect() {
   while (!esClosed) {
-    setStatus("connecting…");
+    setStatus(COPY.chat.statusConnecting);
     try {
       const res = await fetch("/api/stream?client_id=" + encodeURIComponent(cid) + (since ? "&since=" + since : ""));
       if (!res.ok) {
         let msg = res.status + " " + res.statusText;
         try { const j = await res.json(); msg = (j && j.error && j.error.message) || msg; } catch {}
-        setStatus("stream " + res.status + "，" + msg, "bad");
+        setStatus(fill(COPY.chat.statusConnectFailed, { msg }), "bad");
         await sleep(2000);
         continue;
       }
-      setStatus("connected", "ok");
+      setStatus(COPY.chat.statusConnected, "ok");
       const reader = res.body.getReader();
       const dec = new TextDecoder(); let buf = "";
       while (true) {
@@ -210,8 +211,8 @@ async function connect() {
           handleBlock(block);
         }
       }
-    } catch { /* 断线重连 */ }
-    setStatus("reconnecting…", "bad");
+    } catch { /* reconnect below */ }
+    setStatus(COPY.chat.statusReconnecting, "bad");
     await sleep(1000);
   }
 }
@@ -221,7 +222,7 @@ function handleBlock(block) {
     if (line.startsWith("event:")) type = line.slice(6).trim();
     else if (line.startsWith("data:")) { try { data = JSON.parse(line.slice(5).trim()); } catch { data = null; } }
   }
-  if (data === null) return; // ": ping" 等注释帧无 data，忽略
+  if (data === null) return; // ": ping" and other comment-only blocks carry no data
   if (type === "message" && data && data.id !== undefined) {
     renderMessage(data);
     bumpSince(data.id);
@@ -231,17 +232,19 @@ function handleBlock(block) {
   } else if (type === "presence" && data) {
     $("online").textContent = String(data.online);
   } else if (type === "ban") {
-    setStatus("本机已被禁言", "bad");
-    notice("本机已被管理员禁言：" + ((data && data.reason) || "未说明原因"));
+    setStatus(COPY.chat.statusBanned, "bad");
+    notice(fill(COPY.chat.banNotice, { reason: (data && data.reason) || COPY.chat.banReasonUnknown }));
   } else if (type === "notice" && data && data.kind === "history_mode") {
-    notice("历史保存模式已切换为 " + data.mode + "（保留 " + String(data.retention_days) + " 天）");
+    notice(data.mode === "ephemeral"
+      ? COPY.chat.historyOff
+      : fill(COPY.chat.historyKept, { n: String(data.retention_days) }));
   } else if (type === "error") {
-    notice("流错误：" + ((data && data.message) || JSON.stringify(data)), true);
+    notice(fill(COPY.chat.errorNotice, { msg: (data && data.message) || JSON.stringify(data) }), true);
   }
 }
 
-// 纯数字 id 才算续传下界（跳过 "e<eventId>" 直播 id）：since 单调推进，方向安全——since 是
-// 保守下界，重连重复回放由 seen Map 去重吸收、不会丢事件；runStream 对过期游标还有回退保护。
+// Only numeric ids advance the resume bound ("e<eventId>" live ids are skipped): `since` is a
+// conservative lower bound, so replays are absorbed by the seen Map instead of dropping events.
 function bumpSince(id) {
   const n = Number(id);
   if (Number.isInteger(n) && n > since) since = n;
@@ -256,7 +259,7 @@ $("nick").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preven
 (async () => {
   try {
     const meta = await fetch("/api/meta").then((r) => r.json());
-    $("ip").textContent = meta.client_ip || "未知";
+    $("ip").textContent = meta.client_ip || COPY.chat.ipUnknown;
     if (meta.limits) {
       $("nick").maxLength = meta.limits.nick_max || 24;
       $("text").maxLength = meta.limits.text_max || 1000;

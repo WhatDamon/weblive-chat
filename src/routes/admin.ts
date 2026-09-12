@@ -9,6 +9,7 @@ import {
   normalizeIp,
 } from "../lib/security";
 import { rateCheck, windowStartFor } from "../lib/limits";
+import { COPY, fill } from "../lib/copy";
 import { jsonError, readJson, parseIdParam } from "../lib/http";
 import {
   PURGE_ALL_TABLES,
@@ -36,9 +37,9 @@ const COOKIE_FLAGS = "HttpOnly; SameSite=Lax; Path=/";
 
 /** 令牌校验失败原因 → 给操作者的可操作提示（仅管理端可见，不含任何敏感值）。 */
 const PURGE_TOKEN_MSG: Record<PurgeTokenReason, string> = {
-  invalid_token: "预检令牌无效或已过期，请重新预检",
-  token_scope: "预检令牌与当前档位不符，请重新预检",
-  token_ip: "预检令牌与发起 IP 不符，请重新预检",
+  invalid_token: COPY.purge.tokenInvalid,
+  token_scope: COPY.purge.tokenScope,
+  token_ip: COPY.purge.tokenIp,
 };
 export function cookieHeader(
   cfg: AppConfig,
@@ -138,7 +139,7 @@ export function registerAdmin(app: Hono, d: AdminDeps) {
       (rawOffset !== undefined && !/^\d+$/.test(rawOffset))
     )
       return jsonError(c, 400, "invalid_cursor", {
-        message: "limit/offset 必须是整数",
+        message: COPY.route.limitOffsetInt,
       });
     const limit = Math.min(Math.max(Number(rawLimit ?? 200), 1), 500);
     const offset = Math.max(Number(rawOffset ?? 0), 0);
@@ -155,12 +156,15 @@ export function registerAdmin(app: Hono, d: AdminDeps) {
     const ip = normalizeIp(body.ip as string);
     const reason =
       typeof body.reason === "string" ? body.reason.trim().slice(0, 200) : "";
-    if (!ip) return jsonError(c, 400, "invalid_body", { message: "ip 不合法" });
+    if (!ip)
+      return jsonError(c, 400, "invalid_body", {
+        message: COPY.route.ipInvalid,
+      });
     try {
       // 幂等 upsert：重复封禁覆盖 reason 并返回 created:false（而非 409）
       const created = await repo.banUpsert(
         ip,
-        reason || "（未填写原因）",
+        reason || COPY.route.banReasonBlank,
         "admin",
         Date.now(),
       );
@@ -172,7 +176,10 @@ export function registerAdmin(app: Hono, d: AdminDeps) {
 
   app.delete("/api/admin/bans/:ip", guard, async (c) => {
     const ip = normalizeIp(c.req.param("ip"));
-    if (!ip) return jsonError(c, 400, "invalid_body", { message: "ip 不合法" });
+    if (!ip)
+      return jsonError(c, 400, "invalid_body", {
+        message: COPY.route.ipInvalid,
+      });
     try {
       const ok = await repo.banRemove(ip);
       return ok ? c.body(null, 204) : jsonError(c, 404, "not_found");
@@ -221,11 +228,14 @@ export function registerAdmin(app: Hono, d: AdminDeps) {
     const scope = (body as { scope?: unknown } | null)?.scope;
     if (!isPurgeScope(scope))
       return jsonError(c, 400, "invalid_body", {
-        message: "scope 必须是 chat 或 full",
+        message: COPY.route.scopeInvalid,
       });
     try {
       const counts = await repo.purgeCounts();
-      const { token, expiresAt } = mintPurgeToken({ scope, ip }, cfg.adminSecret);
+      const { token, expiresAt } = mintPurgeToken(
+        { scope, ip },
+        cfg.adminSecret,
+      );
       const willDelete = PURGE_TABLES[scope];
       return c.json({
         scope,
@@ -253,12 +263,14 @@ export function registerAdmin(app: Hono, d: AdminDeps) {
     const scope = body.scope;
     if (!isPurgeScope(scope))
       return jsonError(c, 400, "invalid_body", {
-        message: "scope 必须是 chat 或 full",
+        message: COPY.route.scopeInvalid,
       });
     // 逐字确认短语（服务端再校一次，不信任前端校验）
     if (!purgePhraseMatches(scope, body.confirm))
       return jsonError(c, 400, "invalid_confirm", {
-        message: `确认短语需逐字输入「${PURGE_PHRASES[scope]}」`,
+        message: fill(COPY.route.confirmPhraseMismatch, {
+          phrase: PURGE_PHRASES[scope],
+        }),
       });
     // 二次口令：会话 cookie 之外再证明一次持有 ADMIN_SECRET（cookie 被盗不足以清库）
     if (typeof body.secret !== "string" || body.secret !== cfg.adminSecret)
@@ -276,10 +288,14 @@ export function registerAdmin(app: Hono, d: AdminDeps) {
       // 单次使用记账：nonce 落在**当前** 60s 窗口，第二次调用即 >1。
       // （令牌本身 60s 过期，窗口一过该记账行会被常规清理回收；
       //   full 档会连 rate_limits 一起清空 → 已清空的库上重放无额外危害）
-      const used = await repo.rateHit("purge_used", verdict.nonce, windowStartFor());
+      const used = await repo.rateHit(
+        "purge_used",
+        verdict.nonce,
+        windowStartFor(),
+      );
       if (used > 1)
         return jsonError(c, 400, "invalid_token", {
-          message: "该预检令牌已被使用，请重新预检",
+          message: COPY.route.tokenUsed,
         });
       const deleted = await repo.clearData(scope);
       // 审计留痕：数据已销毁，只能靠平台日志追溯（不含消息内容/口令等敏感值）

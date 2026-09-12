@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>WebLive Chat · 管理后台</title>
+<title>{{admin.title}}</title>
 <style>
   :root { color-scheme: light dark; }
   body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif; margin: 0; background: #f4f5f7; color: #1c1e21; }
@@ -34,112 +34,98 @@
 <body>
 <div class="wrap">
   <header>
-    <h1>WebLive Chat 管理后台</h1>
+    <h1>{{admin.heading}}</h1>
     <span class="muted" id="myip"></span>
-    <a href="/demo.html">← 返回聊天室</a>
+    <a href="/demo.html">{{admin.back}}</a>
   </header>
 
   <div id="login" class="card">
-    <h2>管理员登录</h2>
-    <p class="muted">请输入部署时配置的管理员口令。登录后会话以 HttpOnly Cookie 保存，页面不存储口令。</p>
+    <h2>{{admin.loginTitle}}</h2>
     <div class="row">
-      <input type="password" id="secret" placeholder="ADMIN_SECRET 口令" autocomplete="current-password">
-      <button class="primary" id="loginBtn">登录</button>
+      <input type="password" id="secret" placeholder="{{admin.secretPlaceholder}}" autocomplete="current-password">
+      <button class="primary" id="loginBtn">{{admin.loginBtn}}</button>
     </div>
   </div>
 
   <div id="panels">
     <div class="card">
-      <h2>运行状态 <span class="muted" id="stateHint"></span></h2>
+      <h2>{{admin.statsTitle}} <span class="muted" id="stateHint"></span></h2>
       <pre class="stats" id="stats"></pre>
-      <div class="row"><button id="statsBtn">刷新状态</button></div>
+      <div class="row"><button id="statsBtn">{{admin.statsBtn}}</button></div>
     </div>
 
     <div class="card">
-      <h2>IP 封禁 <span class="muted">（禁言不禁看：被封 IP 不能发言，但可继续观看）</span></h2>
+      <h2>{{admin.banTitle}}</h2>
+      <p class="muted">{{admin.banHint}}</p>
       <div class="row">
-        <input type="text" id="banIp" placeholder="IP，如 1.2.3.4" title="封禁本机请用下方按钮或手动粘贴上文本机 IP">
-        <input type="text" id="banReason" placeholder="原因（可选）">
-        <button class="primary" id="banBtn">封禁</button>
-        <button id="selfBanBtn">封禁本机 IP（<span id="selfIp">…</span>）</button>
+        <input type="text" id="banIp" placeholder="{{admin.banIpPlaceholder}}">
+        <input type="text" id="banReason" placeholder="{{admin.banReasonPlaceholder}}">
+        <button class="primary" id="banBtn">{{admin.banBtn}}</button>
+        <button id="selfBanBtn">{{admin.banSelfBtn}} <span id="selfIp"></span></button>
       </div>
       <ul id="bans"></ul>
     </div>
 
     <div class="card">
-      <h2>最近消息 <span class="muted">（可删除；删除为软删占位，全员实时同步）</span></h2>
+      <h2>{{admin.msgTitle}}</h2>
+      <p class="muted">{{admin.msgHint}}</p>
       <ul id="msgs"></ul>
-      <div class="row"><button id="msgsBtn">刷新消息</button></div>
+      <div class="row"><button id="msgsBtn">{{admin.msgBtn}}</button></div>
     </div>
 
     <div class="card danger">
-      <h2>⚠ 危险操作：清空数据</h2>
-      <p class="muted">
-        不可撤销，请先确认数据已无用。校验链条：预检（只读，下发 60 秒令牌）→ 逐字确认短语 → 重输管理员口令 → 浏览器二次确认；
-        令牌绑定本机 IP 且仅能使用一次。
-      </p>
+      <h2>{{admin.purgeTitle}}</h2>
+      <p class="muted">{{admin.purgeHint}}</p>
       <div class="row">
-        <label><input type="radio" name="pScope" value="chat" checked> 清空聊天数据（消息 + 事件，保留封禁/在线/限流）</label>
-        <label><input type="radio" name="pScope" value="full"> 清空全部数据（含封禁/在线/限流，等同恢复出厂）</label>
+        <label><input type="radio" name="pScope" value="chat" checked> {{admin.purgeScopeChat}}</label>
+        <label><input type="radio" name="pScope" value="full"> {{admin.purgeScopeFull}}</label>
       </div>
-      <div class="row"><button id="pPreviewBtn">① 预检（只读，不删数据）</button></div>
+      <div class="row"><button id="pPreviewBtn">{{admin.purgePreviewBtn}}</button></div>
       <div id="pRun" style="display:none">
         <p class="muted" id="pSummary"></p>
-        <p class="muted">请逐字输入确认短语：<code id="pPhrase"></code></p>
+        <p class="muted">{{admin.purgePhraseLabel}}<code id="pPhrase"></code></p>
         <div class="row">
-          <input type="text" id="pConfirm" placeholder="确认短语" autocomplete="off">
-          <input type="password" id="pSecret" placeholder="再次输入管理员口令" autocomplete="current-password">
+          <input type="text" id="pConfirm" placeholder="{{admin.purgeConfirmPlaceholder}}" autocomplete="off">
+          <input type="password" id="pSecret" placeholder="{{admin.secretPlaceholder}}" autocomplete="current-password">
         </div>
         <div class="row">
-          <button class="danger" id="pGoBtn" disabled>② 执行清空</button>
+          <button class="danger" id="pGoBtn" disabled>{{admin.purgeGoBtn}}</button>
           <span class="muted" id="pGoHint"></span>
         </div>
       </div>
-      <p class="muted">清空后已打开的浏览器仍会显示旧消息，需要刷新页面才能看到一致视图。</p>
+      <p class="muted">{{admin.purgeFooter}}</p>
     </div>
   </div>
 </div>
 
+<!--COPY-->
 <script>
 "use strict";
+const COPY = window.COPY, fill = window.fill;
 const $ = (id) => document.getElementById(id);
 
 async function api(path, opts = {}) {
   const res = await fetch(path, { ...opts, headers: { "content-type": "application/json", ...(opts.headers || {}) } });
   if (!res.ok) {
-    let msg = res.status + " " + res.statusText, code = null, origin = null, count = null;
-    try {
-      const j = await res.json();
-      const e = j && j.error;
-      if (e) {
-        msg = e.message || msg; code = e.code; origin = e.origin || null;
-        count = typeof e.allowed_origins_count === "number" ? e.allowed_origins_count : null;
-      }
-    } catch {}
+    let msg = res.status + " " + res.statusText, code = null;
+    try { const e = ((await res.json()) || {}).error; if (e) { msg = e.message || msg; code = e.code; } } catch {}
     const err = new Error(msg);
-    err.status = res.status; err.code = code; err.origin = origin; err.count = count;
+    err.code = code;
     throw err;
   }
   return res.status === 204 ? null : res.json();
 }
 
-// Origin 闸口拒绝是最容易踩的坑（换域名后忘了同步 ALLOWED_ORIGINS），给出可执行提示而非「来源不被允许」
 const alertErr = (e) => {
   if (e && e.code === "origin_not_allowed") {
-    alert("操作失败：本页来源未被服务器允许（403 origin_not_allowed）。\n\n"
-      + "当前来源：" + location.origin + "\n"
-      + "服务器已配置的来源数量：" + (e.count == null ? "未知" : e.count) + "\n\n"
-      + "该域名不在服务器 ALLOWED_ORIGINS 白名单内。处理方式（任选其一）后需重新部署：\n"
-      + "1) 把 " + location.origin + " 加入平台的 ALLOWED_ORIGINS；\n"
-      + "2) 把 ALLOWED_ORIGINS 留空（表示全开，仅建议在无第三方前端时使用）。");
+    alert(fill(COPY.admin.originDenied, { origin: location.origin }));
     return;
   }
   if (e && e.code === "missing_origin") {
-    alert("操作失败：服务器要求请求必须带 Origin 头（REQUIRE_ORIGIN=1）。\n\n"
-      + "请用部署域名访问本页；若不需要该限制，把 REQUIRE_ORIGIN 置为 0 或直接删除该变量。");
+    alert(COPY.admin.originRequired);
     return;
   }
-  alert("操作失败：" + e.message);
+  alert(fill(COPY.admin.actionFailed, { msg: e.message }));
 };
 
 async function refreshAuth() {
@@ -162,16 +148,24 @@ async function refreshAll() {
   refreshMsgs();
 }
 
+// Retention mode wording for operators (server enum is not shown verbatim).
+const RETENTION_NOTE = { degraded_retention: COPY.admin.historyDegraded };
+
 async function refreshStats() {
   try {
     const s = await api("/api/admin/stats");
-    $("stats").textContent =
-      "在线人数：" + s.online +
-      "\n消息总数：" + s.messages_total + "（保留 " + s.messages_retained + "）" +
-      "\n持久化模式：" + s.history.mode + "，保留 " + s.history.retention_days + " 天" +
-      "\n估算占用：" + (s.history.estimate_bytes / 1048576).toFixed(2) + " MB";
-    $("stateHint").textContent = "刷新于 " + new Date().toLocaleTimeString();
-  } catch (e) { $("stats").textContent = "读取失败：" + e.message; }
+    const mode = s.history.mode;
+    const hist = mode === "ephemeral"
+      ? COPY.admin.historyEphemeral
+      : fill(COPY.admin.historyDays, { n: s.history.retention_days }) + (RETENTION_NOTE[mode] || "");
+    $("stats").textContent = [
+      fill(COPY.admin.statsLineOnline, { n: s.online }),
+      fill(COPY.admin.statsLineMessages, { n: s.messages_total }),
+      fill(COPY.admin.statsLineHistory, { value: hist }),
+      fill(COPY.admin.statsLineStorage, { mb: (s.history.estimate_bytes / 1048576).toFixed(2) }),
+    ].join("\n");
+    $("stateHint").textContent = fill(COPY.admin.statsRefreshedAt, { time: new Date().toLocaleTimeString() });
+  } catch (e) { $("stats").textContent = fill(COPY.admin.statsFailed, { msg: e.message }); }
 }
 
 async function refreshBans() {
@@ -182,16 +176,18 @@ async function refreshBans() {
     for (const b of j.bans) {
       const li = document.createElement("li");
       const txt = document.createElement("span");
-      txt.textContent = b.ip + (b.reason ? "（" + b.reason + "）" : "") + " — " + new Date(b.created_at).toLocaleString();
+      txt.textContent = fill(b.reason ? COPY.admin.banLine : COPY.admin.banLineNoReason, {
+        ip: b.ip, reason: b.reason, time: new Date(b.created_at).toLocaleString(),
+      });
       const del = document.createElement("button");
-      del.textContent = "解封";
+      del.textContent = COPY.admin.banUnban;
       del.className = "danger";
       del.style.marginLeft = "8px";
       del.onclick = async () => { try { await api("/api/admin/bans/" + encodeURIComponent(b.ip), { method: "DELETE" }); refreshBans(); } catch (e2) { alertErr(e2); } };
       li.append(txt, del);
       ul.append(li);
     }
-    if (!j.bans.length) ul.append(Object.assign(document.createElement("li"), { className: "muted", textContent: "（暂无封禁）" }));
+    if (!j.bans.length) ul.append(Object.assign(document.createElement("li"), { className: "muted", textContent: COPY.admin.banNone }));
   } catch (e) { alertErr(e); }
 }
 
@@ -203,22 +199,22 @@ async function refreshMsgs() {
     for (const m of j.messages) {
       const li = document.createElement("li");
       const who = document.createElement("b");
-      who.textContent = m.nick + "：";
+      who.textContent = fill(COPY.admin.msgAuthor, { nick: m.nick });
       const when = document.createElement("span");
       when.className = "muted";
       when.textContent = " " + new Date(m.created_at).toLocaleString() + " ";
       const body = document.createElement("span");
-      if (m.deleted) { body.className = "del"; body.textContent = "（已删除）"; }
+      if (m.deleted) { body.className = "del"; body.textContent = COPY.admin.msgDeleted; }
       else body.textContent = m.text;
       const rm = document.createElement("button");
-      rm.textContent = "删除";
+      rm.textContent = COPY.admin.msgDelete;
       rm.style.marginLeft = "8px";
       rm.disabled = m.deleted;
       rm.onclick = async () => { try { await api("/api/admin/messages/" + m.id, { method: "DELETE" }); refreshMsgs(); } catch (e2) { alertErr(e2); } };
       li.append(who, when, body, rm);
       ul.append(li);
     }
-    if (!j.messages.length) ul.append(Object.assign(document.createElement("li"), { className: "muted", textContent: j.mode === "ephemeral" ? "（仅实时模式：历史已停止写入）" : "（暂无消息）" }));
+    if (!j.messages.length) ul.append(Object.assign(document.createElement("li"), { className: "muted", textContent: j.mode === "ephemeral" ? COPY.admin.msgEphemeral : COPY.admin.msgNone }));
   } catch (e) { alertErr(e); }
 }
 
@@ -234,7 +230,7 @@ $("statsBtn").onclick = refreshStats;
 $("msgsBtn").onclick = refreshMsgs;
 $("banBtn").onclick = async () => {
   const ip = $("banIp").value.trim();
-  if (!ip) { alert("请填写 IP"); return; }
+  if (!ip) { alert(COPY.admin.banNeedIp); return; }
   try {
     await api("/api/admin/bans", { method: "POST", body: JSON.stringify({ ip, reason: $("banReason").value.trim() }) });
     $("banIp").value = ""; $("banReason").value = "";
@@ -243,19 +239,28 @@ $("banBtn").onclick = async () => {
 };
 $("selfBanBtn").onclick = async () => {
   const ip = $("selfIp").textContent;
-  if (!ip || ip.indexOf("…") >= 0) { alert("尚未取得本机 IP（请通过部署域名访问本页）"); return; }
+  if (!ip) { alert(COPY.admin.banSelfNoIp); return; }
   try {
-    await api("/api/admin/bans", { method: "POST", body: JSON.stringify({ ip, reason: "管理页操作" }) });
+    await api("/api/admin/bans", { method: "POST", body: JSON.stringify({ ip, reason: COPY.admin.banSelfReason }) });
     refreshBans();
   } catch (e) { alertErr(e); }
 };
 
-// ---- 危险操作：清空数据（两阶段 + 多重校验）----
+const TABLE_LABEL = {
+  messages: COPY.admin.tableMessages,
+  events: COPY.admin.tableEvents,
+  presence: COPY.admin.tablePresence,
+  rate_limits: COPY.admin.tableRateLimits,
+  bans: COPY.admin.tableBans,
+};
+const tableItem = (t, n) => fill(COPY.admin.tableItem, { label: TABLE_LABEL[t], n });
+
+// ---- Danger zone: purge (two-phase, multi-step verification) ----
 let purgeToken = null, purgePhrase = "", purgeScope = "chat", purgeReadyAt = 0, purgeTick = null;
 
 const purgeScopeVal = () => document.querySelector('input[name="pScope"]:checked').value;
 
-/** 复位：丢弃令牌与输入（任何失败/换档位/过期都必须重新预检） */
+/** Reset: drop token and inputs (any failure, scope switch or expiry requires a new preview). */
 function purgeReset(hint) {
   purgeToken = null;
   purgeReadyAt = 0;
@@ -268,7 +273,7 @@ function purgeReset(hint) {
 }
 
 for (const r of document.querySelectorAll('input[name="pScope"]')) {
-  r.onchange = () => purgeReset("已切换档位，请重新预检");
+  r.onchange = () => purgeReset(COPY.admin.purgeSwitched);
 }
 
 $("pPreviewBtn").onclick = async () => {
@@ -278,49 +283,48 @@ $("pPreviewBtn").onclick = async () => {
     purgeToken = p.token;
     purgePhrase = p.confirm_phrase;
     purgeScope = p.scope;
-    const c = p.counts;
-    const del = p.will_delete.map((t) => t + " " + c[t]).join("、");
-    const keep = p.keep.map((t) => t + " " + c[t]).join("、");
-    $("pSummary").textContent = "将删除：" + del + "｜将保留：" + (keep || "无");
+    const del = p.will_delete.map((t) => tableItem(t, p.counts[t])).join(COPY.admin.tableJoin);
+    const keep = p.keep.map((t) => TABLE_LABEL[t]).join(COPY.admin.tableJoin);
+    $("pSummary").textContent = fill(COPY.admin.purgeSummary, { del, keep: keep || COPY.admin.purgeKeepNone });
     $("pPhrase").textContent = p.confirm_phrase;
     $("pRun").style.display = "block";
-    // UI 延迟可用：3 秒后才允许点击（防手快误点），同时跟踪令牌有效期
+    // UI delay: the confirm button unlocks after 3s, and the token TTL is tracked meanwhile.
     purgeReadyAt = Date.now() + 3000;
     $("pGoBtn").disabled = true;
     if (purgeTick) clearInterval(purgeTick);
     purgeTick = setInterval(() => {
       const exp = Math.ceil((p.expires_at - Date.now()) / 1000);
-      if (exp <= 0) { purgeReset("预检令牌已过期，请重新预检"); return; }
+      if (exp <= 0) { purgeReset(COPY.admin.purgeExpired); return; }
       if (Date.now() >= purgeReadyAt) {
         $("pGoBtn").disabled = false;
-        $("pGoHint").textContent = "令牌 " + exp + " 秒后过期";
+        $("pGoHint").textContent = fill(COPY.admin.purgeTokenLeft, { n: exp });
         clearInterval(purgeTick);
         purgeTick = null;
       } else {
-        $("pGoHint").textContent = "按钮 " + Math.ceil((purgeReadyAt - Date.now()) / 1000) + " 秒后可用";
+        $("pGoHint").textContent = fill(COPY.admin.purgeWait, { n: Math.ceil((purgeReadyAt - Date.now()) / 1000) });
       }
     }, 250);
   } catch (e) { purgeReset(""); alertErr(e); }
 };
 
 $("pGoBtn").onclick = async () => {
-  if (!purgeToken) { alert("请先预检"); return; }
+  if (!purgeToken) { alert(COPY.admin.purgeNeedPreview); return; }
   const confirmText = $("pConfirm").value.trim();
-  if (confirmText !== purgePhrase) { alert("确认短语不匹配，请逐字输入：" + purgePhrase); return; }
+  if (confirmText !== purgePhrase) { alert(fill(COPY.admin.purgePhraseWrong, { phrase: purgePhrase })); return; }
   const secret = $("pSecret").value;
-  if (!secret) { alert("请再次输入管理员口令"); return; }
-  const label = purgeScope === "full" ? "全部数据（含封禁/在线/限流）" : "聊天数据（消息 + 事件）";
-  if (!window.confirm("即将清空【" + label + "】。\n\n此操作不可撤销。确定继续？")) return;
+  if (!secret) { alert(COPY.admin.purgeNeedSecret); return; }
+  const label = purgeScope === "full" ? COPY.admin.purgeLabelFull : COPY.admin.purgeLabelChat;
+  if (!window.confirm(fill(COPY.admin.purgeConfirmDialog, { label }))) return;
   $("pGoBtn").disabled = true;
   try {
     const r = await api("/api/admin/purge", {
       method: "POST",
       body: JSON.stringify({ scope: purgeScope, token: purgeToken, confirm: confirmText, secret }),
     });
-    const detail = Object.keys(r.deleted).map((k) => k + " " + r.deleted[k]).join("、");
+    const detail = Object.keys(r.deleted).filter((k) => r.deleted[k] > 0).map((k) => tableItem(k, r.deleted[k])).join(COPY.admin.tableJoin);
     purgeReset("");
     refreshAll();
-    alert("已清空。实际删除行数：" + detail);
+    alert(fill(COPY.admin.purgeDone, { detail: detail || COPY.admin.purgeNothing }));
   } catch (e) {
     purgeReset("");
     alertErr(e);
@@ -330,8 +334,9 @@ $("pGoBtn").onclick = async () => {
 (async () => {
   try {
     const meta = await api("/api/meta");
-    $("selfIp").textContent = meta.client_ip || "未知";
-    $("myip").textContent = "本机 IP：" + (meta.client_ip || "未知");
+    const ip = meta.client_ip || COPY.admin.ipUnknown;
+    $("selfIp").textContent = ip;
+    $("myip").textContent = fill(COPY.admin.selfIpLine, { ip });
   } catch {}
   await refreshAuth();
 })();

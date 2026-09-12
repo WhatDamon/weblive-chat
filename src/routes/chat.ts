@@ -7,6 +7,7 @@ import { validateMessageBody, validUuid } from "../lib/validate";
 import { rateCheck } from "../lib/limits";
 import { runStream } from "../lib/stream";
 import { parseIdParam, jsonError, readJson } from "../lib/http";
+import { COPY } from "../lib/copy";
 import type { WordFilter } from "../lib/wordfilter";
 
 export interface ChatDeps {
@@ -65,13 +66,13 @@ export function registerChat(app: Hono, d: ChatDeps) {
       const since = parseIdParam(c.req.query("since"));
       if (before !== null && since !== null)
         return jsonError(c, 400, "invalid_body", {
-          message: "before 与 since 不可同时使用",
+          message: COPY.route.beforeSinceConflict,
         });
       const rawLimit = c.req.query("limit");
       // limit 只收纯数字串：浮点/非数字拒绝（避免浮点串入 SQL），0/空按下限 1 夹取，不再静默回落 50
       if (rawLimit !== undefined && !/^\d+$/.test(rawLimit))
         return jsonError(c, 400, "invalid_cursor", {
-          message: "limit 必须是正整数",
+          message: COPY.route.limitPositiveInt,
         });
       const limit = Math.min(Math.max(Number(rawLimit ?? 50), 1), 200);
       if (d.history.mode === "ephemeral")

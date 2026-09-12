@@ -1,5 +1,6 @@
 import { describe, expect, test, afterEach } from "bun:test";
 import { readFileSync } from "node:fs";
+import { renderPage } from "../../src/routes/pages";
 import { makeApp } from "../helpers";
 
 /**
@@ -91,11 +92,14 @@ async function bootPage(
     },
   };
 
-  const html = readFileSync(
-    new URL("../../public/admin.html", import.meta.url),
-    "utf8",
+  // 与线上一致：页面经过 renderPage（{{...}} 占位符 → src/lib/copy.ts，注入 window.COPY/fill）
+  const html = renderPage(
+    readFileSync(new URL("../../public/admin.html", import.meta.url), "utf8"),
   );
-  const code = /<script>([\s\S]*?)<\/script>/.exec(html)![1];
+  // 两个脚本按顺序拼接：先是注入脚本，才是页面脚本（页面脚本从 window 取用文案）
+  const code = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)]
+    .map((m) => m[1])
+    .join("\n");
   const dom = createDom();
   // 页面脚本按浏览器全局环境执行：document/window/location/fetch/alert 由 shim 提供
   const locationShim = {
@@ -162,16 +166,16 @@ describe("后台页·清空数据（DOM shim 驱动真实页面逻辑）", () =>
     await el("pPreviewBtn").onclick();
     expect(el("pRun").style.display).toBe("block");
     expect(el("pPhrase").textContent).toBe("清空聊天记录");
-    expect(el("pSummary").textContent).toContain("messages 1");
-    expect(el("pSummary").textContent).toContain("bans 0");
+    expect(el("pSummary").textContent).toContain("消息 1");
+    expect(el("pSummary").textContent).toContain("封禁名单");
     // UI 延迟可用：立刻点击不可用
     expect(el("pGoBtn").disabled).toBe(true);
     await tick(300); // 等一次定时器回调（倒计时文案在 interval 内写入）
-    expect(el("pGoHint").textContent).toContain("秒后可用");
+    expect(el("pGoHint").textContent).toContain("秒后可确认");
 
     await tick(3300); // 等过 3 秒门槛
     expect(el("pGoBtn").disabled).toBe(false);
-    expect(el("pGoHint").textContent).toContain("令牌");
+    expect(el("pGoHint").textContent).toContain("重新预检");
 
     // ② 短语不符：前端拦下，不发请求、不删数据
     el("pConfirm").value = "清空聊天";
@@ -195,7 +199,7 @@ describe("后台页·清空数据（DOM shim 驱动真实页面逻辑）", () =>
     p.setConfirm(true);
     await el("pGoBtn").onclick();
     expect(alerts.at(-1)).toContain("已清空");
-    expect(alerts.at(-1)).toContain("messages 1");
+    expect(alerts.at(-1)).toContain("消息 1");
     expect(
       (await (await p.app.request("/api/messages?limit=5")).json()).messages,
     ).toHaveLength(0);
@@ -227,9 +231,8 @@ describe("后台页·清空数据（DOM shim 驱动真实页面逻辑）", () =>
 
     await el("pPreviewBtn").onclick();
     expect(el("pPhrase").textContent).toBe("清空全部数据");
-    expect(el("pSummary").textContent).toContain("bans 0");
-    expect(el("pSummary").textContent).toContain("presence 0");
-    expect(el("pSummary").textContent).toContain("rate_limits");
+    expect(el("pSummary").textContent).toContain("封禁名单");
+    expect(el("pSummary").textContent).toContain("保留：无");
   }, 20_000);
 
   test("Origin 被拒时后台页给出可执行提示（而不是干巴巴的「来源不被允许」）", async () => {
