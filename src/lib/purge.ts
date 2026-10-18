@@ -55,7 +55,7 @@ export function purgePhraseMatches(scope: PurgeScope, input: unknown): boolean {
 export type PurgeTokenReason = "invalid_token" | "token_scope" | "token_ip";
 
 export type PurgeTokenVerdict =
-  | { ok: true; nonce: string }
+  | { ok: true; nonce: string; exp: number }
   | { ok: false; reason: PurgeTokenReason };
 
 /** The token binds scope + requester IP; the nonce backs the single-use check. */
@@ -82,7 +82,8 @@ export function verifyPurgeToken(
   const p = verifyToken(token, secret);
   if (!p || p.sub !== "purge" || typeof p.nonce !== "string")
     return { ok: false, reason: "invalid_token" };
+  if (typeof p.exp !== "number") return { ok: false, reason: "invalid_token" };
   if (p.scope !== o.scope) return { ok: false, reason: "token_scope" };
   if (p.ip !== o.ip) return { ok: false, reason: "token_ip" };
-  return { ok: true, nonce: p.nonce };
+  return { ok: true, nonce: p.nonce, exp: p.exp };
 }

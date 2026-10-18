@@ -152,6 +152,17 @@ const DELETE_ALL_SQL: Record<PurgeTable, string> = {
   bans: "DELETE FROM bans",
 };
 
+/**
+ * rate_limits 里的 purge_used 是单次令牌的安全账本：清库不能连它一起清，
+ * 否则同一令牌在清库后又能重放一次。
+ */
+const DELETE_RATES_KEEP_NONCE =
+  "DELETE FROM rate_limits WHERE bucket <> 'purge_used'";
+
+/** 清表语句：rate_limits 需要特例，其余走 DELETE_ALL_SQL。 */
+const deleteSqlFor = (t: PurgeTable) =>
+  t === "rate_limits" ? DELETE_RATES_KEEP_NONCE : DELETE_ALL_SQL[t];
+
 const COUNT_SQL: Record<PurgeTable, string> = {
   messages: SQL.cntMessages,
   events: SQL.cntEvents,
@@ -371,7 +382,7 @@ class SqliteRepo implements Repo {
     try {
       const deleted = emptyCounts();
       for (const t of PURGE_TABLES[scope]) {
-        const r = await tx.execute(DELETE_ALL_SQL[t]);
+        const r = await tx.execute(deleteSqlFor(t));
         deleted[t] = Number(r.rowsAffected);
       }
       await tx.commit();
@@ -426,7 +437,7 @@ class PostgresRepo implements Repo {
     return await this.sql.begin(async (tx) => {
       const deleted = emptyCounts();
       for (const t of PURGE_TABLES[scope]) {
-        const r = await tx.unsafe(DELETE_ALL_SQL[t], []);
+        const r = await tx.unsafe(deleteSqlFor(t), []);
         deleted[t] = r.count === undefined ? 0 : Number(r.count);
       }
       return deleted;
@@ -833,7 +844,9 @@ class MemoryRepo implements Repo {
           this.presence.clear();
           break;
         case "rate_limits":
-          this.rates.clear();
+          // 同 SQL 层：purge_used 账本行必须活着，否则令牌可跨清库重放。
+          for (const k of [...this.rates.keys()])
+            if (!k.startsWith("purge_used\u0000")) this.rates.delete(k);
           break;
         case "bans":
           this.bans.clear();
@@ -841,6 +854,9 @@ class MemoryRepo implements Repo {
       }
       deleted[t] = before[t];
     }
+    // purge_used 账本行存活，所以 rate_limits 的实际删除数不是清空前的行数。
+    if (scope === "full")
+      deleted.rate_limits = Math.max(0, before.rate_limits - this.rates.size);
     return deleted;
   }
   private countsNow(): PurgeCounts {

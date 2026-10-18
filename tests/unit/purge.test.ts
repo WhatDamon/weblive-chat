@@ -62,6 +62,8 @@ describe("purge 校验核心（危险操作的多重校验）", () => {
     const v = verifyPurgeToken(minted.token, { scope: "chat", ip: IP }, SECRET);
     expect(v.ok).toBe(true);
     expect(v.ok && v.nonce).toBe(minted.nonce);
+    // exp 必须带出来：nonce 要记在令牌过期窗口，否则跨窗口重放会漏判。
+    expect(v.ok && v.exp).toBe(minted.expiresAt);
   });
 
   test("令牌：档位不符 / IP 不符 / 篡改 / 过期 / 换密钥 一律拒绝", () => {

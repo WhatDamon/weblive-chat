@@ -8,7 +8,7 @@ import {
   clientIpFromHeaders,
   normalizeIp,
 } from "../lib/security";
-import { rateCheck, windowStartFor } from "../lib/limits";
+import { rateCheck } from "../lib/limits";
 import { COPY, fill } from "../lib/copy";
 import {
   jsonError,
@@ -286,12 +286,9 @@ export function registerAdmin(app: Hono<AppEnv>, d: AdminDeps) {
         message: PURGE_TOKEN_MSG[verdict.reason],
       });
     try {
-      // Book the nonce in the current window; maintenance would purge a window-0 marker early.
-      const used = await repo.rateHit(
-        "purge_used",
-        verdict.nonce,
-        windowStartFor(),
-      );
+      // nonce 记在「令牌过期时刻」这个固定窗口：重放在任何时间点都命中同一主键，
+      // 而 window_start 在未来，清理逻辑（< now-2h）不会提前删掉它。
+      const used = await repo.rateHit("purge_used", verdict.nonce, verdict.exp);
       if (used > 1)
         return jsonError(c, 400, "invalid_token", {
           message: COPY.route.tokenUsed,

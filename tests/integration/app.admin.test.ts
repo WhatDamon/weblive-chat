@@ -1,4 +1,4 @@
-import { describe, expect, test, afterEach } from "bun:test";
+import { describe, expect, test, afterEach, setSystemTime } from "bun:test";
 import { makeApp, UUID } from "../helpers";
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -218,6 +218,47 @@ describe("危险操作：清空数据（多重校验）", () => {
     expect(p.counts.events).toBe(1);
     expect(typeof p.token).toBe("string");
     expect(p.expires_at).toBeGreaterThan(Date.now());
+  });
+
+  test("同一 purge 令牌跨 60s 窗口重放仍被拒", async () => {
+    const { app } = await bootPurge();
+    const cookie = await login(app);
+    await seedMsg(app);
+    setSystemTime(new Date("2026-01-01T00:00:59.800Z"));
+    const pv = await (await preview(app, cookie, "chat")).json();
+    const body = {
+      scope: "chat",
+      confirm: pv.confirm_phrase,
+      secret: "test-secret",
+      token: pv.token,
+    };
+    // 首次执行在 00:00 窗口记账，重放落在 00:01 窗口。
+    setSystemTime(new Date("2026-01-01T00:00:59.900Z"));
+    const first = await commit(app, cookie, body);
+    expect(first.status).toBe(200);
+    setSystemTime(new Date("2026-01-01T00:01:00.100Z"));
+    const second = await commit(app, cookie, body);
+    expect(second.status).toBe(400);
+    expect((await second.json()).error.code).toBe("invalid_token");
+    setSystemTime();
+  });
+
+  test("full 清空后，同一令牌仍被判为已使用", async () => {
+    const { app } = await bootPurge();
+    const cookie = await login(app);
+    await seedMsg(app);
+    const pv = await (await preview(app, cookie, "full")).json();
+    const body = {
+      scope: "full",
+      confirm: pv.confirm_phrase,
+      secret: "test-secret",
+      token: pv.token,
+    };
+    const first = await commit(app, cookie, body);
+    expect(first.status).toBe(200);
+    const second = await commit(app, cookie, body);
+    expect(second.status).toBe(400);
+    expect((await second.json()).error.code).toBe("invalid_token");
   });
 
   test("执行：缺口令 / 错口令 → 401；短语不符 → 400 invalid_confirm", async () => {
