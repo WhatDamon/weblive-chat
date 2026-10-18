@@ -129,6 +129,8 @@ describe("memory 驱动 app 契约", () => {
     const { app, repo } = await bootMemory({
       maxRows: 4,
       maintenanceEvery: 1,
+      // 该用例断言精确行数：关掉统计缓存，每次维护都重数。
+      statsTtlMs: 0,
     });
     for (let i = 0; i < 5; i++) {
       const r = await app.request("/api/messages", {

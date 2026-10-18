@@ -62,6 +62,7 @@ export function testCfg(over: Partial<AppConfig> = {}): AppConfig {
     presenceCountMs: 10,
     heartbeatMs: 15_000,
     eventsTtlMs: 3_600_000,
+    statsTtlMs: 60_000,
     maintenanceEvery: 100,
     rate: {
       msgPerMin: 10,

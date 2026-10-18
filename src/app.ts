@@ -126,7 +126,7 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
     history.writeCount += 1;
     if (history.writeCount % cfg.maintenanceEvery !== 0)
       return { mode: history.mode, retentionDays: history.retentionDays };
-    const res = await performMaintenance({ repo, cfg }, now);
+    const res = await performMaintenance({ repo, cfg, state: history }, now);
     if (
       res.mode !== history.mode ||
       res.retentionDays !== history.retentionDays

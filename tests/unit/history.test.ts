@@ -50,6 +50,7 @@ function historyDeps(over: Record<string, any> = {}) {
         retentionDays: 90,
         presenceTtlMs: 45_000,
         eventsTtlMs: 3_600_000,
+        statsTtlMs: 60_000,
         maintenanceEvery: 100,
       },
       state: newHistoryState(),
@@ -102,21 +103,18 @@ describe("performMaintenance", () => {
   test("四阶段顺序：清理→档位删超龄→超行数裁剪→重算档位", async () => {
     const T = 1_800_000_000_000; // Fixed now so the cutoff assertion is deterministic
     const DAY = 86_400_000;
-    const statsSeq = [5, 5, 2]; // initial → after age-delete (still over cap) → after trim
-    let i = 0;
     let dayCutoff = 0;
     let floor = 0;
+    // 5 行 → 删掉 1 行超龄（4）→ 仍超上限 → 裁掉 2 行（2）→ 2/3 落在降档区间。
     const { calls, deps } = historyDeps({
       messageStats: async () => {
         calls.push("messageStats");
-        const r = statsSeq[Math.min(i, statsSeq.length - 1)];
-        i++;
-        return { total: r, retained: r };
+        return { total: 5, retained: 5 };
       },
       deleteMessagesOlderThan: async (cutoff: number) => {
         calls.push("deleteMessagesOlderThan");
         dayCutoff = cutoff;
-        return 5;
+        return 1;
       },
       idAtOffset: async (offset: number) => {
         calls.push("idAtOffset");
@@ -131,24 +129,47 @@ describe("performMaintenance", () => {
       },
     });
     const res = await performMaintenance(deps, T);
+    // COUNT 只发生一次：删除量靠差值折算，不再每步重数一遍。
     expect(calls).toEqual([
       "cleanupEvents",
       "cleanupPresence",
       "cleanupRateLimits",
       "messageStats",
       "deleteMessagesOlderThan",
-      "messageStats",
       "idAtOffset",
       "trimMessagesBelow",
-      "messageStats",
     ]);
     expect(dayCutoff).toBe(T - DAY); // retained >= maxRows initially → 1-day tier
     expect(floor).toBe(100); // 3rd newest id = oldest row kept
     expect(res).toEqual({
       mode: "degraded_retention",
       retentionDays: 30,
-      deleted: 7,
+      deleted: 3,
     });
+  });
+
+  test("删除量大于缓存行数时折算夹到 0，不出现负数档位", async () => {
+    const { deps } = historyDeps({
+      messageStats: async () => ({ total: 10, retained: 10 }),
+      deleteMessagesOlderThan: async () => 99,
+    });
+    const res = await performMaintenance(deps, 1_000);
+    expect(res.mode).toBe("full");
+    expect(res.deleted).toBe(99);
+  });
+
+  test("60s 内多次维护只 COUNT 一次", async () => {
+    let statsCalls = 0;
+    const { deps } = historyDeps({
+      messageStats: async () => {
+        statsCalls += 1;
+        return { total: 5, retained: 5 };
+      },
+    });
+    await performMaintenance(deps, 1_000);
+    await performMaintenance(deps, 2_000);
+    await performMaintenance(deps, 3_000);
+    expect(statsCalls).toBe(1);
   });
 
   test("触顶裁剪不调用 historyBefore（不再整表读）", async () => {

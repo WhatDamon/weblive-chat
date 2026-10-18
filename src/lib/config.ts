@@ -49,6 +49,8 @@ export interface AppConfig {
   presenceCountMs: number;
   heartbeatMs: number;
   eventsTtlMs: number;
+  /** 维护里 COUNT 结果的缓存时长：60s 内多次维护复用同一次统计。 */
+  statsTtlMs: number;
   maintenanceEvery: number;
   rate: RateCfg;
   allowedOrigins: string[];
@@ -156,6 +158,7 @@ export function loadConfig(
     presenceCountMs: 5_000,
     heartbeatMs: 15_000,
     eventsTtlMs: 3_600_000,
+    statsTtlMs: 60_000,
     maintenanceEvery: envInt(env, "MAINTENANCE_EVERY", 100),
     rate: {
       msgPerMin: envInt(env, "MSG_RATE_PER_MIN", 10),

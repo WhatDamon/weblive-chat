@@ -331,7 +331,12 @@ describe("chat 公开端点", () => {
   });
 
   test("维护触发：接近 maxRows 广播 notice；到顶 → ephemeral 停写历史", async () => {
-    const { app, repo } = await boot({ maxRows: 4, maintenanceEvery: 1 });
+    // statsTtlMs:0 = 每次维护都重数（该用例断言的是精确行数，不能被 60s 缓存挡住）。
+    const { app, repo } = await boot({
+      maxRows: 4,
+      maintenanceEvery: 1,
+      statsTtlMs: 0,
+    });
     const send = () =>
       app.request("/api/messages", {
         method: "POST",

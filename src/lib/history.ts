@@ -30,13 +30,22 @@ export interface HistoryState {
   writeCount: number;
   mode: HistoryMode;
   retentionDays: number;
+  /** 最近一次 COUNT 的结果与时间：短时间内重复维护不必再扫表。 */
+  stats: { at: number; retained: number } | null;
 }
 
 export function newHistoryState(): HistoryState {
-  return { writeCount: 0, mode: "full", retentionDays: 90 };
+  return {
+    writeCount: 0,
+    mode: "full",
+    retentionDays: 90,
+    stats: null,
+  };
 }
 
 export interface HistoryDeps {
+  /** 档位 + 统计缓存的跨次状态（app 里与 history 同寿）。 */
+  state: HistoryState;
   repo: {
     messageStats(): Promise<{ total: number; retained: number }>;
     cleanupEvents(before: number): Promise<number>;
@@ -52,6 +61,7 @@ export interface HistoryDeps {
     retentionDays: number;
     presenceTtlMs: number;
     eventsTtlMs: number;
+    statsTtlMs: number;
     maintenanceEvery: number;
   };
 }
@@ -64,25 +74,34 @@ export async function performMaintenance(
   deps: HistoryDeps,
   now = Date.now(),
 ): Promise<{ mode: HistoryMode; retentionDays: number; deleted: number }> {
-  const { repo, cfg } = deps;
+  const { repo, cfg, state } = deps;
   await repo.cleanupEvents(now - cfg.eventsTtlMs);
   await repo.cleanupPresence(now - cfg.presenceTtlMs * 3);
   await repo.cleanupRateLimits(now - 2 * 3_600_000);
-  let { retained } = await repo.messageStats();
-  let days = cfg.retentionDays;
+  // COUNT(*) 是这里最贵的查询：缓存期内复用，删除量按差值折算而不是再数一遍。
+  let retained: number;
+  const cached = state.stats;
+  if (cached && now - cached.at < cfg.statsTtlMs) {
+    retained = cached.retained;
+  } else {
+    ({ retained } = await repo.messageStats());
+  }
   let deleted = 0;
   const dec = decideHistory({ retained }, cfg);
-  days = Math.min(days, dec.retentionDays);
-  deleted += await repo.deleteMessagesOlderThan(now - days * DAY_MS);
-  ({ retained } = await repo.messageStats());
+  const days = Math.min(cfg.retentionDays, dec.retentionDays);
+  const deletedDays = await repo.deleteMessagesOlderThan(now - days * DAY_MS);
+  deleted += deletedDays;
+  retained = Math.max(0, retained - deletedDays);
   if (retained >= cfg.maxRows && cfg.maxRows > 0) {
     const floor = await repo.idAtOffset(cfg.maxRows - 1);
     // floor 是第 maxRows 新的 id：删掉更早的，正好留 maxRows 行；null 表示不足 maxRows。
     if (floor !== null) {
-      deleted += await repo.trimMessagesBelow(floor);
-      ({ retained } = await repo.messageStats());
+      const trimmed = await repo.trimMessagesBelow(floor);
+      deleted += trimmed;
+      retained = Math.max(0, retained - trimmed);
     }
   }
+  state.stats = { at: now, retained };
   const final = decideHistory({ retained }, cfg);
   return { mode: final.mode, retentionDays: final.retentionDays, deleted };
 }
