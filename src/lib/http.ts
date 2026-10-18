@@ -7,8 +7,15 @@ import { COPY } from "./copy";
 export const codes = COPY.error;
 export type ErrCode = keyof typeof codes;
 
+/** Hono 的 Variables 需要显式声明，否则 c.set/c.get 在 strict 下无法通过类型检查。 */
+export type AppEnv = { Variables: { requestId: string } };
+
+export function getRequestId(c: Context<AppEnv>): string {
+  return c.get("requestId") ?? "unknown";
+}
+
 export function jsonError(
-  c: Context,
+  c: Context<AppEnv>,
   status: ContentfulStatusCode,
   code: ErrCode,
   extra?: {
@@ -40,7 +47,7 @@ export function jsonError(
 }
 
 export async function readJson(
-  c: Context,
+  c: Context<AppEnv>,
 ): Promise<Record<string, unknown> | null> {
   const ct = c.req.header("content-type") ?? "";
   if (!ct.includes("application/json")) return null;

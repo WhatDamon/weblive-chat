@@ -10,7 +10,13 @@ import {
 } from "../lib/security";
 import { rateCheck, windowStartFor } from "../lib/limits";
 import { COPY, fill } from "../lib/copy";
-import { jsonError, readJson, parseIdParam } from "../lib/http";
+import {
+  jsonError,
+  readJson,
+  parseIdParam,
+  getRequestId,
+  type AppEnv,
+} from "../lib/http";
 import {
   PURGE_ALL_TABLES,
   PURGE_PHRASES,
@@ -50,7 +56,7 @@ export function cookieHeader(
   return `${cfg.cookieName}=${token}; Max-Age=${maxAgeSec}; ${COOKIE_FLAGS}${secure}`;
 }
 
-export function registerAdmin(app: Hono, d: AdminDeps) {
+export function registerAdmin(app: Hono<AppEnv>, d: AdminDeps) {
   const { cfg, repo } = d;
 
   const ipOf = (c: Context) =>

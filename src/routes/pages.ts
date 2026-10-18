@@ -2,6 +2,7 @@ import type { Context, Hono } from "hono";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { COPY, fill, lookupCopy } from "../lib/copy";
+import type { AppEnv } from "../lib/http";
 
 // cwd is the repo root locally; vercel.json includeFiles ships public/** to the function.
 const readPublic = async (file: string) => {
@@ -39,7 +40,7 @@ const serve = async (c: Context, file: string) => {
   }
 };
 
-export function registerPages(app: Hono) {
+export function registerPages(app: Hono<AppEnv>) {
   app.get("/", (c) => {
     c.header("cache-control", PAGE_CACHE);
     return c.redirect("/demo.html", 302);

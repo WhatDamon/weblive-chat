@@ -1,8 +1,9 @@
 import type { Hono } from "hono";
 import { buildApp } from "./app";
+import type { AppEnv } from "./lib/http";
 
 /** Lazy singleton: storage connects on first request, never at import time. */
-let state: { app: Hono } | null = null;
+let state: { app: Hono<AppEnv> } | null = null;
 const getApp = async () => {
   state ??= { app: (await buildApp()).app };
   return state.app;

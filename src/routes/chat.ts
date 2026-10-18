@@ -6,7 +6,14 @@ import { clientIpFromHeaders } from "../lib/security";
 import { validateMessageBody, validUuid } from "../lib/validate";
 import { rateCheck } from "../lib/limits";
 import { runStream } from "../lib/stream";
-import { parseIdParam, jsonError, readJson } from "../lib/http";
+import {
+  parseIdParam,
+  jsonError,
+  readJson,
+  getRequestId,
+  type AppEnv,
+} from "../lib/http";
+import { logError } from "../lib/log";
 import { COPY } from "../lib/copy";
 import type { WordFilter } from "../lib/wordfilter";
 
@@ -30,11 +37,11 @@ const fmtMessage = (m: any) => ({
   created_at: iso(m.created_at),
 });
 
-export function registerChat(app: Hono, d: ChatDeps) {
+export function registerChat(app: Hono<AppEnv>, d: ChatDeps) {
   const { cfg, repo } = d;
 
   /** Trust boundary: X-Forwarded-For is trusted only behind the platform proxy. */
-  const ipOf = (c: Context) =>
+  const ipOf = (c: Context<AppEnv>) =>
     clientIpFromHeaders(
       { "x-forwarded-for": c.req.header("x-forwarded-for") },
       cfg.devIp,
@@ -88,8 +95,9 @@ export function registerChat(app: Hono, d: ChatDeps) {
         messages: filtered.map(fmtMessage),
         mode: d.history.mode,
       });
-    } catch {
+    } catch (err) {
       // Storage failures become 503: this read is polled and must not surface as a 500.
+      logError("chat.messages.get", err, { request_id: getRequestId(c) });
       return jsonError(c, 503, "db_unavailable");
     }
   });
@@ -131,7 +139,8 @@ export function registerChat(app: Hono, d: ChatDeps) {
         { id: String(messageId), created_at: iso(msg.created_at) },
         201,
       );
-    } catch {
+    } catch (err) {
+      logError("chat.messages.post", err, { request_id: getRequestId(c) });
       return jsonError(c, 503, "db_unavailable");
     }
   });
@@ -145,7 +154,8 @@ export function registerChat(app: Hono, d: ChatDeps) {
         return jsonError(c, 429, "rate_limited", {
           retry_after_ms: rl.retryAfterMs,
         });
-    } catch {
+    } catch (err) {
+      logError("chat.stream.rate", err, { request_id: getRequestId(c) });
       return jsonError(c, 503, "db_unavailable");
     }
     const sinceParam = c.req.query("since");

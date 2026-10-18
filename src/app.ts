@@ -2,7 +2,8 @@ import { Hono } from "hono";
 import type { AppConfig } from "./lib/config";
 import type { Repo } from "./lib/repo";
 import { classifyOrigin, normalizeOrigin } from "./lib/security";
-import { jsonError } from "./lib/http";
+import { jsonError, getRequestId, type AppEnv } from "./lib/http";
+import { logError, newRequestId } from "./lib/log";
 import { registerChat } from "./routes/chat";
 import { registerAdmin } from "./routes/admin";
 import { registerPages } from "./routes/pages";
@@ -18,7 +19,7 @@ export interface AppDeps {
   repo: Repo;
 }
 
-export function createApp(deps: AppDeps): Hono {
+export function createApp(deps: AppDeps): Hono<AppEnv> {
   const { cfg, repo } = deps;
   const history = newHistoryState();
   // Seed before the first maintenance so /api/meta reports the configured retention.
@@ -37,7 +38,7 @@ export function createApp(deps: AppDeps): Hono {
       })();
     return booted;
   };
-  const app = new Hono();
+  const app = new Hono<AppEnv>();
 
   // Lazy wordlist load; on failure degrade to explicit words instead of failing the request.
   let filterPromise: Promise<WordFilter> | null = null;
@@ -60,10 +61,15 @@ export function createApp(deps: AppDeps): Hono {
   };
 
   // Bootstrap failure maps to 503 so a storage outage never surfaces as a bare 500.
+  // request id 必须比 bootstrap 更早设置：否则启动失败的那一条日志拿不到 id。
   app.use("*", async (c, next) => {
+    const rid = newRequestId();
+    c.set("requestId", rid);
+    c.header("x-request-id", rid);
     try {
       await boot();
-    } catch {
+    } catch (err) {
+      logError("boot", err, { request_id: getRequestId(c) });
       return jsonError(c, 503, "db_unavailable");
     }
     await next();
