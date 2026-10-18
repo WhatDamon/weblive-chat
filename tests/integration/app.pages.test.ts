@@ -1,5 +1,6 @@
 import { describe, expect, test, afterEach } from "bun:test";
-import { makeApp } from "../helpers";
+import { makeApp, makeRepo, testCfg } from "../helpers";
+import { createApp } from "../../src/app";
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
   while (cleanups.length) await cleanups.pop()!();
@@ -42,5 +43,19 @@ describe("静态页", () => {
     const meta = await app.request("/api/meta");
     expect(meta.status).toBe(200);
     expect(meta.headers.get("cache-control")).toBe("no-store");
+  });
+
+  test("DB 启动失败时静态页仍可访问，/api 返回 503", async () => {
+    const { repo, cleanup } = await makeRepo("memory");
+    (repo as unknown as Record<string, unknown>).bootstrap = async () => {
+      throw new Error("db down");
+    };
+    const app = createApp({ cfg: testCfg(), repo });
+    const page = await app.fetch(new Request("http://x/demo.html"));
+    expect(page.status).toBe(200);
+    expect(page.headers.get("cache-control")).toContain("s-maxage=300");
+    const api = await app.fetch(new Request("http://x/api/meta"));
+    expect(api.status).toBe(503);
+    await cleanup();
   });
 });

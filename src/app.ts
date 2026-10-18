@@ -61,12 +61,16 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
     return filterPromise;
   };
 
-  // Bootstrap failure maps to 503 so a storage outage never surfaces as a bare 500.
-  // request id 必须比 bootstrap 更早设置：否则启动失败的那一条日志拿不到 id。
+  // request id 覆盖所有路径（含静态页的 404）：故障排查时任何响应都能对上日志。
   app.use("*", async (c, next) => {
     const rid = newRequestId();
     c.set("requestId", rid);
     c.header("x-request-id", rid);
+    await next();
+  });
+
+  // Bootstrap 失败只影响 API；静态页不碰存储，DB 抖动时仍要能打开。
+  app.use("/api/*", async (c, next) => {
     try {
       await boot();
     } catch (err) {
