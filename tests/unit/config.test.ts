@@ -115,6 +115,10 @@ describe("loadConfig", () => {
     );
   });
 
+  test("RATE_HISTORY_PER_MIN 默认 60", () => {
+    expect(loadConfig({ ...base }).rate.historyPerMin).toBe(60);
+  });
+
   test("BANNED_WORDS_DIR 空串/空白回落到 cwd/data/banned", () => {
     const def = join(process.cwd(), "data/banned");
     expect(loadConfig({ ...base, BANNED_WORDS_DIR: "" }).bannedWordsDir).toBe(

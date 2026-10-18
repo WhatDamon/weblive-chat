@@ -35,7 +35,7 @@ export async function makeRepo(explicit?: TestProvider): Promise<{
 }
 
 export function testCfg(over: Partial<AppConfig> = {}): AppConfig {
-  return {
+  const base: AppConfig = {
     env: "test",
     port: 0,
     dbProvider: "sqlite",
@@ -68,13 +68,15 @@ export function testCfg(over: Partial<AppConfig> = {}): AppConfig {
       streamPerMin: 20,
       loginPerMin: 5,
       purgePerMin: 5,
+      historyPerMin: 60,
     },
     allowedOrigins: [],
     requireOrigin: false,
     sessionDays: 7,
     cookieName: "wl_admin",
-    ...over,
   };
+  // rate 里新增字段时，部分覆盖不能把其余限流桶一起抹掉（否则 undefined 会让整桶永远 429）。
+  return { ...base, ...over, rate: { ...base.rate, ...over.rate } };
 }
 
 export async function makeApp(

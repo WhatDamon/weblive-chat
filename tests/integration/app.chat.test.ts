@@ -144,6 +144,25 @@ describe("chat 公开端点", () => {
     expect(pulls).toBeLessThan(20);
   });
 
+  test("历史读取限流：超过 historyPerMin 返回 429", async () => {
+    const { app } = await boot({
+      rate: {
+        msgPerMin: 10,
+        streamPerMin: 20,
+        loginPerMin: 5,
+        purgePerMin: 5,
+        historyPerMin: 2,
+      } as never,
+    });
+    expect((await app.request("/api/messages")).status).toBe(200);
+    expect((await app.request("/api/messages")).status).toBe(200);
+    const third = await app.request("/api/messages");
+    expect(third.status).toBe(429);
+    expect(((await third.json()) as any).error.retry_after_ms).toBeGreaterThan(
+      0,
+    );
+  });
+
   test("错误信封：400 禁词 / 400 uuid / 429 限流（含 retry_after_ms）", async () => {
     const { app } = await boot({
       rate: {

@@ -78,6 +78,17 @@ export function registerChat(app: Hono<AppEnv>, d: ChatDeps) {
           message: COPY.route.limitPositiveInt,
         });
       const limit = Math.min(Math.max(Number(rawLimit ?? 50), 1), 200);
+      // 独立桶：历史与发消息、开流的预算互不挤占。
+      const rl = await rateCheck(
+        repo,
+        "history",
+        ipOf(c),
+        cfg.rate.historyPerMin,
+      );
+      if (!rl.allowed)
+        return jsonError(c, 429, "rate_limited", {
+          retry_after_ms: rl.retryAfterMs,
+        });
       if (d.history.mode === "ephemeral")
         return c.json({ messages: [], mode: "ephemeral" });
       let rows: any[];

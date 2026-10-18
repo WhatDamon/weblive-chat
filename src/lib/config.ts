@@ -10,6 +10,8 @@ export interface RateCfg {
   loginPerMin: number;
   /** Preview and execute share this bucket. */
   purgePerMin: number;
+  /** GET /api/messages：历史是公开数据，但仍然值得一个每 IP 上限。 */
+  historyPerMin: number;
 }
 
 export interface AppConfig {
@@ -141,6 +143,7 @@ export function loadConfig(
       streamPerMin: envInt(env, "STREAM_RATE_PER_MIN", 20),
       loginPerMin: envInt(env, "LOGIN_RATE_PER_MIN", 5),
       purgePerMin: envInt(env, "PURGE_RATE_PER_MIN", 5),
+      historyPerMin: envInt(env, "RATE_HISTORY_PER_MIN", 60),
     },
     allowedOrigins,
     requireOrigin:

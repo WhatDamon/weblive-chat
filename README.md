@@ -63,7 +63,7 @@ turso db tokens create weblive-chat   # → TURSO_AUTH_TOKEN
 | `REQUIRE_ORIGIN` | `0` | `1` 时无 Origin 的直连（curl/脚本）也拒绝 |
 | `NODE_ENV` | `development` | Vercel 自动设为 `production` |
 
-其余可调项（限流、长度上限、历史保留、违禁词、会话天数、维护频率等）见 **[`.env.example`](.env.example)**，每项带注释。
+其余可调项（限流 `MSG_RATE_PER_MIN` / `STREAM_RATE_PER_MIN` / `LOGIN_RATE_PER_MIN` / `RATE_HISTORY_PER_MIN` / `PURGE_RATE_PER_MIN`、长度上限、历史保留、违禁词、会话天数、维护频率等）见 **[`.env.example`](.env.example)**，每项带注释。
 
 ⚠️ **设置 `ALLOWED_ORIGINS` 必须把部署自身域名一并列入**（同源 `/demo.html`、`/admin` 的写请求也带 Origin），否则会 `403 origin_not_allowed`；**换域名后要同步该变量并重新部署**。语法、通配与排查见 [`docs/api.md`](docs/api.md) §3。
 
