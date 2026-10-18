@@ -55,6 +55,11 @@ export interface AppConfig {
   rate: RateCfg;
   allowedOrigins: string[];
   requireOrigin: boolean;
+  /** Postgres 连接参数：默认单连接，Serverless 下多于 1 只是在抢同一个后端。 */
+  pgPoolMax: number;
+  pgPrepare: boolean;
+  pgIdleTimeoutS: number;
+  pgConnectTimeoutS: number;
   /** 管理写操作必须同源；生产默认开启（公开 API 的 ALLOWED_ORIGINS 不参与）。 */
   adminRequireOrigin: boolean;
   sessionDays: number;
@@ -171,6 +176,11 @@ export function loadConfig(
     requireOrigin:
       (env.REQUIRE_ORIGIN ?? "false") === "1" ||
       (env.REQUIRE_ORIGIN ?? "").toLowerCase() === "true",
+    pgPoolMax: envInt(env, "PG_POOL_MAX", 1),
+    // 事务模式的连接池（Supabase/pgBouncer）不支持 prepared statement。
+    pgPrepare: (env.PG_PREPARE ?? "1") !== "0",
+    pgIdleTimeoutS: envInt(env, "PG_IDLE_TIMEOUT_S", 20),
+    pgConnectTimeoutS: envInt(env, "PG_CONNECT_TIMEOUT_S", 10),
     adminRequireOrigin: (() => {
       const raw = (env.ADMIN_REQUIRE_ORIGIN ?? "").trim().toLowerCase();
       if (raw === "1" || raw === "true") return true;

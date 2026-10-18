@@ -215,12 +215,11 @@ export async function buildApp(
   >,
 ) {
   const { loadConfig } = await import("./lib/config");
-  const { createRepo } = await import("./lib/repo");
+  const { createRepo, pgOptions } = await import("./lib/repo");
   const cfg = loadConfig(env);
-  const repo = await createRepo(
-    cfg.dbProvider,
-    cfg.databaseUrl,
-    cfg.tursoAuthToken,
-  );
+  const repo = await createRepo(cfg.dbProvider, cfg.databaseUrl, {
+    authToken: cfg.tursoAuthToken,
+    pg: pgOptions(cfg),
+  });
   return { cfg, repo, app: createApp({ cfg, repo }) };
 }

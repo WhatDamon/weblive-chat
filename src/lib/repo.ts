@@ -1,6 +1,6 @@
 import { createClient, type Client } from "@libsql/client";
 import postgres from "postgres";
-import type { Provider } from "./config";
+import type { AppConfig, Provider } from "./config";
 import { ddlFor } from "./ddl";
 import {
   PURGE_ALL_TABLES,
@@ -933,17 +933,62 @@ class MemoryRepo implements Repo {
   }
 }
 
+export interface PgOptions {
+  max: number;
+  prepare: boolean;
+  idleTimeoutSec: number;
+  connectTimeoutSec: number;
+}
+
+export interface RepoOptions {
+  authToken?: string;
+  pg?: PgOptions;
+}
+
+const PG_DEFAULTS: PgOptions = {
+  max: 1,
+  prepare: true,
+  idleTimeoutSec: 20,
+  connectTimeoutSec: 10,
+};
+
+export function pgOptions(
+  cfg: Pick<
+    AppConfig,
+    "pgPoolMax" | "pgPrepare" | "pgIdleTimeoutS" | "pgConnectTimeoutS"
+  >,
+): PgOptions {
+  return {
+    max: cfg.pgPoolMax,
+    prepare: cfg.pgPrepare,
+    idleTimeoutSec: cfg.pgIdleTimeoutS,
+    connectTimeoutSec: cfg.pgConnectTimeoutS,
+  };
+}
+
 export async function createRepo(
   provider: Provider,
   databaseUrl: string,
-  authToken?: string,
+  o: RepoOptions = {},
 ): Promise<Repo> {
   if (provider === "memory") {
     return new MemoryRepo();
   }
   if (provider === "sqlite") {
-    return new SqliteRepo(createClient({ url: databaseUrl, authToken }));
+    return new SqliteRepo(
+      createClient({ url: databaseUrl, authToken: o.authToken }),
+    );
   }
   const ssl = /[?&]sslmode=require/.test(databaseUrl) ? "require" : false;
-  return new PostgresRepo(postgres(databaseUrl, { ssl, max: 1 }));
+  const pg = o.pg ?? PG_DEFAULTS;
+  return new PostgresRepo(
+    postgres(databaseUrl, {
+      ssl,
+      max: pg.max,
+      prepare: pg.prepare,
+      // postgres.js 用秒，且参数名是 snake_case。
+      idle_timeout: pg.idleTimeoutSec,
+      connect_timeout: pg.connectTimeoutSec,
+    }),
+  );
 }

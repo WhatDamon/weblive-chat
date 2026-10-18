@@ -74,6 +74,10 @@ export function testCfg(over: Partial<AppConfig> = {}): AppConfig {
     allowedOrigins: [],
     requireOrigin: false,
     adminRequireOrigin: false,
+    pgPoolMax: 1,
+    pgPrepare: true,
+    pgIdleTimeoutS: 20,
+    pgConnectTimeoutS: 10,
     sessionDays: 7,
     cookieName: "wl_admin",
   };
