@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { loadConfig } from "../../src/lib/config";
+import { testCfg } from "../helpers";
 
 const base = { NODE_ENV: "test", ADMIN_SECRET: "s3cret" };
 
@@ -145,5 +146,15 @@ describe("loadConfig", () => {
   test("RateCfg 不再包含未使用的 windowMs", () => {
     const cfg = loadConfig({ ...base });
     expect("windowMs" in cfg.rate).toBe(false);
+  });
+});
+
+describe("测试夹具", () => {
+  test("testCfg 自动继承 loadConfig 的新字段（无手工漂移）", () => {
+    const c = testCfg();
+    expect(c.adminRequireOrigin).toBe(false);
+    expect(c.rate.historyPerMin).toBe(60);
+    expect(c.pgPrepare).toBe(true);
+    expect(c.statsTtlMs).toBe(60_000);
   });
 });

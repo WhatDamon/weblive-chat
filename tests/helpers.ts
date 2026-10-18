@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { createRepo } from "../src/lib/repo";
 import type { Repo } from "../src/lib/repo";
 import { createAppWithHandle } from "../src/app";
-import type { AppConfig, Provider } from "../src/lib/config";
+import { loadConfig, type AppConfig, type Provider } from "../src/lib/config";
 
 export type TestProvider = Provider;
 
@@ -34,55 +34,33 @@ export async function makeRepo(explicit?: TestProvider): Promise<{
   };
 }
 
+// 由真实 loadConfig 生成：新增 AppConfig 字段时夹具自动跟上，
+// 不再因为手写对象漏字段而在无关测试里报 TS2741。
+const testBase = loadConfig({
+  NODE_ENV: "test",
+  DB_PROVIDER: "sqlite",
+  DATABASE_URL: "file:cfg-placeholder.db",
+  ADMIN_SECRET: "test-secret",
+  BANNED_WORDS_MODE: "off",
+  BANNED_WORDS: "赌博",
+  BANNED_WORDS_DIR: join(tmpdir(), "wl-no-words"),
+});
+
 export function testCfg(over: Partial<AppConfig> = {}): AppConfig {
-  const base: AppConfig = {
-    env: "test",
+  return {
+    ...testBase,
+    // 下面这些不是 env，只有测试需要毫秒级而不是秒级。
     port: 0,
-    dbProvider: "sqlite",
-    // placeholder: makeApp builds the real repo in its own temp dir
-    databaseUrl: "file:cfg-placeholder.db",
-    adminSecret: "test-secret",
-    devIp: "127.0.0.1",
-    nickMax: 24,
-    textMax: 1000,
-    bannedWords: ["赌博"],
-    // wordfilter off by default: tests must not depend on the repo data/ dir
-    bannedWordsMode: "off",
-    bannedWordsDir: join(tmpdir(), "wl-no-words"),
-    bannedWordsAllow: [],
-    retentionDays: 90,
-    maxRows: 500_000,
-    backfillMax: 0,
-    presenceTtlMs: 45_000,
     pollMs: 10,
     idlePollMs: 10,
     idleAfterMs: 1_000_000,
     eventProbeMs: 0,
     presenceUpsertMs: 10,
     presenceCountMs: 10,
-    heartbeatMs: 15_000,
-    eventsTtlMs: 3_600_000,
-    statsTtlMs: 60_000,
-    maintenanceEvery: 100,
-    rate: {
-      msgPerMin: 10,
-      streamPerMin: 20,
-      loginPerMin: 5,
-      purgePerMin: 5,
-      historyPerMin: 60,
-    },
-    allowedOrigins: [],
-    requireOrigin: false,
-    adminRequireOrigin: false,
-    pgPoolMax: 1,
-    pgPrepare: true,
-    pgIdleTimeoutS: 20,
-    pgConnectTimeoutS: 10,
-    sessionDays: 7,
-    cookieName: "wl_admin",
+    ...over,
+    // rate 里新增字段时，部分覆盖不能把其余限流桶一起抹掉（否则 undefined 会让整桶永远 429）。
+    rate: { ...testBase.rate, ...over.rate },
   };
-  // rate 里新增字段时，部分覆盖不能把其余限流桶一起抹掉（否则 undefined 会让整桶永远 429）。
-  return { ...base, ...over, rate: { ...base.rate, ...over.rate } };
 }
 
 export async function makeApp(
