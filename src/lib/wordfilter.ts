@@ -96,7 +96,7 @@ async function readWordDir(dir: string): Promise<string[]> {
     files = await readdir(dir);
   } catch {
     // A missing wordlist dir is non-fatal (explicit words still apply) but must be logged loudly.
-    console.error(`[wordfilter] wordlist dir unreadable, skipped: ${dir}`);
+    console.error(`[wordfilter] wordlist dir unreadable: ${dir}`);
     return [];
   }
   const out: string[] = [];
@@ -128,5 +128,12 @@ export async function loadWordFilter(opts: {
     if (opts.mode === "strict")
       words.push(...(await readWordDir(join(opts.dir, "strict"))));
   }
-  return buildWordFilter(words, opts.allow ?? []);
+  const filter = buildWordFilter(words, opts.allow ?? []);
+  if (opts.mode !== "off" && filter.size === 0) {
+    // 过滤表为空等于没有审核：必须显眼，否则会把「配了 basic」误当成「在拦」。
+    console.error(
+      `[wordfilter] 0 words loaded (mode=${opts.mode}, dir=${opts.dir})`,
+    );
+  }
+  return filter;
 }

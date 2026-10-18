@@ -115,6 +115,16 @@ describe("loadConfig", () => {
     );
   });
 
+  test("BANNED_WORDS_DIR 空串/空白回落到 cwd/data/banned", () => {
+    const def = join(process.cwd(), "data/banned");
+    expect(loadConfig({ ...base, BANNED_WORDS_DIR: "" }).bannedWordsDir).toBe(
+      def,
+    );
+    expect(
+      loadConfig({ ...base, BANNED_WORDS_DIR: "   " }).bannedWordsDir,
+    ).toBe(def);
+  });
+
   test("RateCfg 不再包含未使用的 windowMs", () => {
     const cfg = loadConfig({ ...base });
     expect("windowMs" in cfg.rate).toBe(false);

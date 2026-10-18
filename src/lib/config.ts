@@ -1,5 +1,6 @@
 import type { BannedWordsMode } from "./wordfilter";
 import { parseOriginList } from "./security";
+import { join } from "node:path";
 
 export type Provider = "sqlite" | "postgres" | "memory";
 
@@ -98,6 +99,7 @@ export function loadConfig(
     throw new Error(
       `BANNED_WORDS_MODE must be off|basic|strict, got "${bannedWordsMode}"`,
     );
+  const bannedWordsDirRaw = (env.BANNED_WORDS_DIR ?? "").trim();
   return {
     env: envName,
     port: envInt(env, "PORT", 3000),
@@ -113,7 +115,10 @@ export function loadConfig(
       .map((s) => s.trim())
       .filter(Boolean),
     bannedWordsMode,
-    bannedWordsDir: env.BANNED_WORDS_DIR ?? `${process.cwd()}/data/banned`,
+    // 空串是「未设置」而不是「当前目录」：.env.example 里的 `BANNED_WORDS_DIR=` 必须落回默认目录。
+    bannedWordsDir: bannedWordsDirRaw
+      ? bannedWordsDirRaw
+      : join(process.cwd(), "data/banned"),
     bannedWordsAllow: (env.BANNED_WORDS_ALLOW ?? "")
       .split(",")
       .map((s) => s.trim())
