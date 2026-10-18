@@ -14,9 +14,11 @@ import {
   jsonError,
   readJson,
   parseIdParam,
-  getRequestId,
+  failDb,
   type AppEnv,
 } from "../lib/http";
+import { logInfo } from "../lib/log";
+import { metricsSnapshot } from "../lib/metrics";
 import {
   PURGE_ALL_TABLES,
   PURGE_PHRASES,
@@ -74,8 +76,8 @@ export function registerAdmin(app: Hono<AppEnv>, d: AdminDeps) {
         return jsonError(c, 429, "rate_limited", {
           retry_after_ms: rl.retryAfterMs,
         });
-    } catch {
-      return jsonError(c, 503, "db_unavailable");
+    } catch (err) {
+      return failDb(c, "admin.login", err);
     }
     const body = await readJson(c);
     const given = (body as { secret?: unknown } | null)?.secret;
@@ -125,9 +127,11 @@ export function registerAdmin(app: Hono<AppEnv>, d: AdminDeps) {
           retention_days: hist.retentionDays,
           estimate_bytes: stats.retained * 400,
         },
+        // 每实例计数：运维排查用，别当业务指标。
+        runtime: metricsSnapshot(),
       });
-    } catch {
-      return jsonError(c, 503, "db_unavailable");
+    } catch (err) {
+      return failDb(c, "admin.stats", err);
     }
   });
 
@@ -146,8 +150,8 @@ export function registerAdmin(app: Hono<AppEnv>, d: AdminDeps) {
     const offset = Math.max(Number(rawOffset ?? 0), 0);
     try {
       return c.json({ bans: await repo.banList(limit, offset) });
-    } catch {
-      return jsonError(c, 503, "db_unavailable");
+    } catch (err) {
+      return failDb(c, "admin.bans.get", err);
     }
   });
 
@@ -170,8 +174,8 @@ export function registerAdmin(app: Hono<AppEnv>, d: AdminDeps) {
         Date.now(),
       );
       return c.json({ created, ip });
-    } catch {
-      return jsonError(c, 503, "db_unavailable");
+    } catch (err) {
+      return failDb(c, "admin.bans.post", err);
     }
   });
 
@@ -184,8 +188,8 @@ export function registerAdmin(app: Hono<AppEnv>, d: AdminDeps) {
     try {
       const ok = await repo.banRemove(ip);
       return ok ? c.body(null, 204) : jsonError(c, 404, "not_found");
-    } catch {
-      return jsonError(c, 503, "db_unavailable");
+    } catch (err) {
+      return failDb(c, "admin.bans.delete", err);
     }
   });
 
@@ -199,8 +203,8 @@ export function registerAdmin(app: Hono<AppEnv>, d: AdminDeps) {
       // Delete event carries only the message id; never the operator IP.
       await repo.insertEvent("delete", JSON.stringify({ id: String(id) }), now);
       return c.body(null, 204);
-    } catch {
-      return jsonError(c, 503, "db_unavailable");
+    } catch (err) {
+      return failDb(c, "admin.messages.delete", err);
     }
   });
 
@@ -212,8 +216,8 @@ export function registerAdmin(app: Hono<AppEnv>, d: AdminDeps) {
       return jsonError(c, 429, "rate_limited", {
         retry_after_ms: rl.retryAfterMs,
       });
-    } catch {
-      return jsonError(c, 503, "db_unavailable");
+    } catch (err) {
+      return failDb(c, "admin.purge.rate", err);
     }
   };
 
@@ -246,8 +250,8 @@ export function registerAdmin(app: Hono<AppEnv>, d: AdminDeps) {
         token,
         expires_at: expiresAt,
       });
-    } catch {
-      return jsonError(c, 503, "db_unavailable");
+    } catch (err) {
+      return failDb(c, "admin.purge.preview", err);
     }
   });
 
@@ -294,12 +298,14 @@ export function registerAdmin(app: Hono<AppEnv>, d: AdminDeps) {
         });
       const deleted = await repo.clearData(scope);
       // Audit trail: platform logs are the only record after data is destroyed. No secrets.
-      console.error(
-        `[audit] purge scope=${scope} ip=${ip} deleted=${JSON.stringify(deleted)}`,
-      );
+      logInfo("audit.purge", {
+        scope,
+        ip,
+        deleted: JSON.stringify(deleted),
+      });
       return c.json({ scope, deleted });
-    } catch {
-      return jsonError(c, 503, "db_unavailable");
+    } catch (err) {
+      return failDb(c, "admin.purge.run", err);
     }
   });
 }

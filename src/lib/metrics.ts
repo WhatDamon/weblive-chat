@@ -1,7 +1,15 @@
 /**
- * 进程内诊断计数：每个实例各算各的，只用来回答「这个实例现在健康吗」，
- * 不是业务真相（实例会被平台随时回收/横向扩容）。任务 5 补齐计数点。
+ * 进程内计数：Serverless 每实例独立，只用于排障与容量观察，不作业务真相。
  */
+const counters = {
+  activeStreams: 0,
+  dbErrors: 0,
+  maintenanceRuns: 0,
+  streamsOpened: 0,
+};
+
+export type MetricName = keyof typeof counters;
+
 export interface MetricsSnapshot {
   active_streams: number;
   streams_opened: number;
@@ -9,11 +17,24 @@ export interface MetricsSnapshot {
   maintenance_runs: number;
 }
 
+export function incMetric(name: MetricName): void {
+  counters[name] += 1;
+}
+
+export function decMetric(name: MetricName): void {
+  counters[name] = Math.max(0, counters[name] - 1);
+}
+
+export function resetMetrics(): void {
+  for (const k of Object.keys(counters) as MetricName[]) counters[k] = 0;
+}
+
+/** 返回拷贝：调用方改快照不得影响计数器。 */
 export function metricsSnapshot(): MetricsSnapshot {
   return {
-    active_streams: 0,
-    streams_opened: 0,
-    db_errors: 0,
-    maintenance_runs: 0,
+    active_streams: counters.activeStreams,
+    streams_opened: counters.streamsOpened,
+    db_errors: counters.dbErrors,
+    maintenance_runs: counters.maintenanceRuns,
   };
 }

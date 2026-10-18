@@ -10,10 +10,10 @@ import {
   parseIdParam,
   jsonError,
   readJson,
-  getRequestId,
+  failDb,
   type AppEnv,
 } from "../lib/http";
-import { logError } from "../lib/log";
+import { decMetric, incMetric } from "../lib/metrics";
 import { COPY } from "../lib/copy";
 import type { WordFilter } from "../lib/wordfilter";
 
@@ -97,8 +97,7 @@ export function registerChat(app: Hono<AppEnv>, d: ChatDeps) {
       });
     } catch (err) {
       // Storage failures become 503: this read is polled and must not surface as a 500.
-      logError("chat.messages.get", err, { request_id: getRequestId(c) });
-      return jsonError(c, 503, "db_unavailable");
+      return failDb(c, "chat.messages.get", err);
     }
   });
 
@@ -140,8 +139,7 @@ export function registerChat(app: Hono<AppEnv>, d: ChatDeps) {
         201,
       );
     } catch (err) {
-      logError("chat.messages.post", err, { request_id: getRequestId(c) });
-      return jsonError(c, 503, "db_unavailable");
+      return failDb(c, "chat.messages.post", err);
     }
   });
 
@@ -155,8 +153,7 @@ export function registerChat(app: Hono<AppEnv>, d: ChatDeps) {
           retry_after_ms: rl.retryAfterMs,
         });
     } catch (err) {
-      logError("chat.stream.rate", err, { request_id: getRequestId(c) });
-      return jsonError(c, 503, "db_unavailable");
+      return failDb(c, "chat.stream.rate", err);
     }
     const sinceParam = c.req.query("since");
     const since =
@@ -169,6 +166,9 @@ export function registerChat(app: Hono<AppEnv>, d: ChatDeps) {
     // Dynamic import keeps hono/streaming out of every non-stream request path.
     const { streamSSE } = await import("hono/streaming");
     return streamSSE(c, async (stream) => {
+      let counted = true;
+      incMetric("activeStreams");
+      incMetric("streamsOpened");
       const ctrl = runStream({
         repo,
         cfg: {
@@ -197,6 +197,11 @@ export function registerChat(app: Hono<AppEnv>, d: ChatDeps) {
       await new Promise<void>((resolve) => {
         stream.onAbort(() => {
           ctrl.stop();
+          // onAbort 可能因客户端半开连接被重复回调：只减一次。
+          if (counted) {
+            counted = false;
+            decMetric("activeStreams");
+          }
           resolve();
         });
       });

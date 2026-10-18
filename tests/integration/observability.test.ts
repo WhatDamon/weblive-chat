@@ -1,5 +1,6 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import { createApp } from "../../src/app";
+import { metricsSnapshot, resetMetrics } from "../../src/lib/metrics";
 import { makeRepo, testCfg } from "../helpers";
 
 describe("可观测性", () => {
@@ -13,6 +14,7 @@ describe("可观测性", () => {
       throw new Error("sqlite: disk I/O error");
     };
     const app = createApp({ cfg: testCfg(), repo });
+    resetMetrics();
 
     const res = await app.fetch(new Request("http://x/api/messages"));
     expect(res.status).toBe(503);
@@ -36,6 +38,8 @@ describe("可观测性", () => {
     expect(String(hit!.msg)).toContain("disk I/O error");
     // 客户端响应不得泄露内部异常
     expect(JSON.stringify(await res.json())).not.toContain("disk I/O error");
+    // 计数器是排障入口：503 必须能在指标里看见。
+    expect(metricsSnapshot().db_errors).toBeGreaterThanOrEqual(1);
     spy.mockRestore();
     await cleanup();
   });

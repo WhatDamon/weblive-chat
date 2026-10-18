@@ -3,6 +3,8 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { MAX_ID_BOUND } from "./history";
 
 import { COPY } from "./copy";
+import { incMetric } from "./metrics";
+import { logError } from "./log";
 
 export const codes = COPY.error;
 export type ErrCode = keyof typeof codes;
@@ -44,6 +46,13 @@ export function jsonError(
     },
     status,
   );
+}
+
+/** 存储故障的统一出口：计数 + 结构化日志 + 503 信封（客户端看不到内部原因）。 */
+export function failDb(c: Context<AppEnv>, scope: string, err: unknown) {
+  incMetric("dbErrors");
+  logError(scope, err, { request_id: getRequestId(c) });
+  return jsonError(c, 503, "db_unavailable");
 }
 
 export async function readJson(
