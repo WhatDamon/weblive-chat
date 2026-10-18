@@ -41,6 +41,21 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
   };
   const app = new Hono<AppEnv>();
 
+  // 全站安全头：注册在最前面，任何响应（含 4xx/5xx）都带上。
+  app.use("*", async (c, next) => {
+    c.header("x-content-type-options", "nosniff");
+    c.header("referrer-policy", "no-referrer");
+    c.header("x-frame-options", "DENY");
+    c.header("permissions-policy", "geolocation=(), camera=(), microphone=()");
+    // HSTS 只在生产发：本地 http 开发环境带上它会把浏览器锁死。
+    if (cfg.env === "production")
+      c.header(
+        "strict-transport-security",
+        "max-age=31536000; includeSubDomains",
+      );
+    await next();
+  });
+
   // Lazy wordlist load; on failure degrade to explicit words instead of failing the request.
   let filterPromise: Promise<WordFilter> | null = null;
   const getFilter = (): Promise<WordFilter> => {

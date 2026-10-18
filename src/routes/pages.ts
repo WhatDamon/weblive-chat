@@ -1,4 +1,5 @@
 import type { Context, Hono } from "hono";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { COPY, fill, lookupCopy } from "../lib/copy";
@@ -31,10 +32,55 @@ export function renderPage(html: string): string {
 // Pages are static per deployment: let the edge serve repeats so page loads cost no instance time.
 const PAGE_CACHE = "public, s-maxage=300, stale-while-revalidate=600";
 
-const serve = async (c: Context, file: string) => {
+type Rendered = { html: string; csp: string };
+// Per-instance memo: rendering is pure, so a cold instance pays it once per file.
+const cache = new Map<string, Rendered>();
+const stats = { hits: 0, misses: 0 };
+
+/** Inline block bodies → 'sha256-…'; zero-build pages pass CSP by hash, never unsafe-inline. */
+const inlineHashes = (html: string, tag: "script" | "style"): string[] =>
+  [...html.matchAll(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, "g"))].map(
+    (m) => `'sha256-${createHash("sha256").update(m[1]).digest("base64")}'`,
+  );
+
+export function cspFor(html: string): string {
+  const script = inlineHashes(html, "script");
+  const style = inlineHashes(html, "style");
+  return [
+    "default-src 'self'",
+    ["script-src 'self'", ...script].join(" "),
+    ["style-src 'self'", ...style].join(" "),
+    "connect-src 'self'",
+    "img-src 'self' data:",
+    "base-uri 'none'",
+    "form-action 'none'",
+    "frame-ancestors 'none'",
+  ].join("; ");
+}
+
+export function clearPageCache(): void {
+  cache.clear();
+  stats.hits = 0;
+  stats.misses = 0;
+}
+
+export function pageCacheStats(): { hits: number; misses: number } {
+  return { ...stats };
+}
+
+const serve = async (c: Context<AppEnv>, file: string) => {
   c.header("cache-control", PAGE_CACHE);
   try {
-    return c.html(renderPage(await readPublic(file)));
+    let r = cache.get(file);
+    if (r) stats.hits += 1;
+    else {
+      stats.misses += 1;
+      const html = renderPage(await readPublic(file));
+      r = { html, csp: cspFor(html) };
+      cache.set(file, r);
+    }
+    c.header("content-security-policy", r.csp);
+    return c.html(r.html);
   } catch {
     return c.body(fill(COPY.route.pageMissing, { file }), 404);
   }
