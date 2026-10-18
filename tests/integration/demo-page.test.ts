@@ -80,13 +80,18 @@ async function until(cond: () => boolean, ms = 1000) {
   return cond();
 }
 
-async function bootDemo(wl?: { idleMs: number; pollMs: number }) {
+async function bootDemo(
+  wl?: { idleMs: number; pollMs: number },
+  failFirstStream = false,
+) {
   const h = await makeApp();
   cleanups.push(h.cleanup);
   const { app } = h;
   let streamOpens = 0;
   let streamAborts = 0;
+  let streamAttempts = 0;
   let messageFetches = 0;
+  let failuresLeft = failFirstStream ? 1 : 0;
 
   // Synthetic SSE body: emits one presence frame, then ends when the page aborts it.
   const streamFetch = (signal?: AbortSignal) => {
@@ -110,7 +115,17 @@ async function bootDemo(wl?: { idleMs: number; pollMs: number }) {
     );
   };
   const fetchShim = async (path: string, opts: any = {}) => {
-    if (path.startsWith("/api/stream")) return streamFetch(opts.signal);
+    if (path.startsWith("/api/stream")) {
+      streamAttempts++;
+      if (failuresLeft > 0) {
+        failuresLeft--;
+        return new Response('{"error":{"code":"db_unavailable"}}', {
+          status: 503,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return streamFetch(opts.signal);
+    }
     if (path.startsWith("/api/messages")) messageFetches++;
     return app.request(path, {
       method: opts.method,
@@ -136,7 +151,12 @@ async function bootDemo(wl?: { idleMs: number; pollMs: number }) {
 
   return {
     dom,
-    stats: () => ({ streamOpens, streamAborts, messageFetches }),
+    stats: () => ({
+      streamOpens,
+      streamAborts,
+      streamAttempts,
+      messageFetches,
+    }),
   };
 }
 
@@ -181,5 +201,20 @@ describe("聊天页·页面可见性联动（服务器成本）", () => {
 
     d.dom.fire("mousemove");
     expect(await until(() => d.stats().streamOpens === 2, 2000)).toBe(true);
+  });
+});
+
+describe("聊天页·退避脚本缺失时的健壮性", () => {
+  test("/retry.js 没加载成功也要能重连（退化到本地同公式实现）", async () => {
+    const saved = (globalThis as any).backoffDelay;
+    delete (globalThis as any).backoffDelay; // 模拟外链脚本 404/被拦截
+    try {
+      const d = await bootDemo(undefined, true); // 第一次开流返回 503
+      // attempt 0 的退避是 0.5–1s：2.5s 内必须重新尝试并成功建流。
+      expect(await until(() => d.stats().streamOpens === 1, 2500)).toBe(true);
+      expect(d.stats().streamAttempts).toBe(2);
+    } finally {
+      (globalThis as any).backoffDelay = saved;
+    }
   });
 });

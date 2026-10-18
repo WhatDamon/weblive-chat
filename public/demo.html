@@ -192,11 +192,21 @@ async function send() {
 }
 
 let since = 0;
+// Same formula as public/retry.js, used when that external script failed to load:
+// a broken static asset must not throw inside the reconnect loop and stop all retries.
+function fallbackBackoff(attempt) {
+  return Math.min(30000, 1000 * Math.pow(2, attempt));
+}
+function nextBackoff(attempt) {
+  var f = typeof backoffDelay === "function" ? backoffDelay : fallbackBackoff;
+  return f(attempt, Math.random);
+}
+
 async function connect() {
   let wasIdle = false;
   // Consecutive failures; reset on a successful response so one blip does not slow recovery.
   let attempt = 0;
-  const backoff = () => sleep(backoffDelay(attempt++, Math.random));
+  const backoff = () => sleep(nextBackoff(attempt++));
   while (true) {
     if (paused) { await sleep(1000); continue; } // wait here until the page is visible again
     if (idle) { wasIdle = true; await sleep(POLL_MS); if (!paused && idle) await loadHistory(true); continue; }
