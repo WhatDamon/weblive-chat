@@ -12,6 +12,16 @@ const boot = async () => {
 };
 
 describe("静态页", () => {
+  test("GET /retry.js → 200 JS，长缓存，且不做 {{ }} 渲染", async () => {
+    const { app } = await boot();
+    const res = await app.request("/retry.js");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("javascript");
+    expect(res.headers.get("cache-control")).toContain("s-maxage=300");
+    const body = await res.text();
+    expect(body).toContain("backoffDelay");
+  });
+
   test("GET / → 302 /demo.html；/demo.html 与 /admin 返回 200 且含关键标记", async () => {
     const { app } = await boot();
     const root = await app.request("/");

@@ -1,7 +1,10 @@
 import { describe, expect, test, afterEach } from "bun:test";
 import { readFileSync } from "node:fs";
 import { renderPage } from "../../src/routes/pages";
-import { makeApp } from "../helpers";
+import { loadRetryScript, makeApp } from "../helpers";
+
+// 页面用 <script src="/retry.js"> 引入；shim 也要执行同一份源码。
+loadRetryScript();
 
 /** Runs public/demo.html inline JS in a minimal DOM shim, with the real app as backend. */
 

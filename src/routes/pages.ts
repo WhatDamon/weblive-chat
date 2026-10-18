@@ -91,6 +91,12 @@ export function registerPages(app: Hono<AppEnv>) {
     c.header("cache-control", PAGE_CACHE);
     return c.redirect("/demo.html", 302);
   });
+  // 客户端退避脚本：零构建静态资源，不做 {{ }} 渲染，也不参与页面缓存。
+  app.get("/retry.js", async (c) => {
+    c.header("cache-control", PAGE_CACHE);
+    c.header("content-type", "application/javascript; charset=utf-8");
+    return c.body(await readPublic("retry.js"));
+  });
   app.get("/demo.html", (c) => serve(c, "demo.html"));
   app.get("/admin", (c) => serve(c, "admin.html"));
   app.get("/admin.html", (c) => serve(c, "admin.html"));

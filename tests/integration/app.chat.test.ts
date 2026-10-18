@@ -395,6 +395,20 @@ describe("chat 公开端点", () => {
     );
   });
 
+  test("SSE 首帧下发 retry: 3000（浏览器初始重连间隔）", async () => {
+    const { app } = await boot();
+    const res = await app.request(`/api/stream?client_id=${UUID}&since=0`, {
+      headers: { "x-forwarded-for": "4.4.4.4" },
+    });
+    expect(res.status).toBe(200);
+    const reader = res.body!.getReader();
+    const { value } = await reader.read();
+    expect(new TextDecoder().decode(value).startsWith("retry: 3000\n\n")).toBe(
+      true,
+    );
+    await reader.cancel();
+  });
+
   test("POST 不等待维护：慢速清理进行中，响应已返回", async () => {
     const { repo, cleanup } = await makeRepo("memory");
     let openGate: () => void = () => {};

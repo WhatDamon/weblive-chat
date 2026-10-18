@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRepo } from "../src/lib/repo";
@@ -123,6 +123,19 @@ export async function makeApp(
   };
 }
 
+/**
+ * 页面用 <script src="/retry.js"> 引入退避函数；DOM shim 不执行外链脚本，
+ * 所以测试执行同一份源码（读文件 + new Function），保证测的是真实实现。
+ * 用 new Function 而不是 import：public/ 没有类型声明，也不该为它开 allowJs。
+ */
+export function loadRetryScript(): void {
+  const src = readFileSync(
+    new URL("../public/retry.js", import.meta.url),
+    "utf8",
+  );
+  new Function(src)();
+}
+
 export const UUID = "11111111-2222-4333-8444-555555555555";
 
 /** Reads SSE until waitFor matches, then cancels the stream; blocks without data: are skipped. */
@@ -152,7 +165,10 @@ export async function readSse(
         else if (line.startsWith("data:"))
           data = JSON.parse(line.slice(5).trim());
       }
-      if (data !== null) out.push({ type, data });
+      // ": ping" 注释与 "retry: 3000" 保留字段都不是事件：没有 data 就跳过，
+      // 否则 waitFor 会被一个 data=null 的块误触发。
+      if (data === null) continue;
+      out.push({ type, data });
       if (waitFor(type, data)) {
         await reader.cancel().catch(() => {});
         return out;

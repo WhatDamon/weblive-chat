@@ -178,6 +178,9 @@ export function registerChat(app: Hono<AppEnv>, d: ChatDeps) {
     // Dynamic import keeps hono/streaming out of every non-stream request path.
     const { streamSSE } = await import("hono/streaming");
     return streamSSE(c, async (stream) => {
+      // SSE 标准字段，给浏览器 EventSource 一个初始重连间隔；
+      // 用 stream.write 而不是 writeSSE({retry})，后者在部分 hono 版本会当成 data 帧。
+      stream.write("retry: 3000\n\n");
       let counted = true;
       incMetric("activeStreams");
       incMetric("streamsOpened");
