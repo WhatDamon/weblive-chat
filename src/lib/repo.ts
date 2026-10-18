@@ -44,6 +44,8 @@ export interface Repo {
   close(): Promise<void>;
   /** Cheapest liveness probe: SELECT 1. */
   ping(): Promise<void>;
+  /** 运维探针：已应用的 schema 版本 + 关键索引名（health 与测试共用）。 */
+  schemaInfo(): Promise<{ version: number; indexes: string[] }>;
   /** Single-tx dual write; payload.id = String(messageId) so clients can dedupe. */
   sendMessageAndEvent(
     m: MessageInput,
@@ -200,6 +202,18 @@ class SqliteRepo implements Repo {
   }
   async ping(): Promise<void> {
     await this.c.execute("SELECT 1");
+  }
+  async schemaInfo(): Promise<{ version: number; indexes: string[] }> {
+    const idx = await this.c.execute(
+      "SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'",
+    );
+    const v = await this.c.execute(
+      "SELECT MAX(version) AS v FROM schema_version",
+    );
+    return {
+      version: Number(v.rows[0]?.v ?? 0),
+      indexes: idx.rows.map((r) => String(r.name)),
+    };
   }
 
   async close(): Promise<void> {
@@ -436,6 +450,18 @@ class PostgresRepo implements Repo {
   }
   async ping(): Promise<void> {
     await this.sql.unsafe("SELECT 1");
+  }
+  async schemaInfo(): Promise<{ version: number; indexes: string[] }> {
+    const idx = await this.sql.unsafe(
+      "SELECT indexname AS name FROM pg_indexes WHERE schemaname = current_schema()",
+    );
+    const v = await this.sql.unsafe(
+      "SELECT MAX(version) AS v FROM schema_version",
+    );
+    return {
+      version: Number(v[0]?.v ?? 0),
+      indexes: idx.map((r) => String(r.name)),
+    };
   }
   async close(): Promise<void> {
     await this.sql.end();
@@ -677,6 +703,13 @@ class MemoryRepo implements Repo {
 
   async bootstrap(): Promise<void> {}
   async ping(): Promise<void> {}
+  async schemaInfo(): Promise<{ version: number; indexes: string[] }> {
+    // 内存实现没有真实索引，但契约要一致，测试替身才可互换。
+    return {
+      version: 1,
+      indexes: ["idx_events_created_at", "idx_rate_limits_window"],
+    };
+  }
   async close(): Promise<void> {}
 
   async sendMessageAndEvent(

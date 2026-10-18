@@ -15,6 +15,21 @@ function contract(provider: TestProvider) {
       await cleanup();
     });
 
+    test("DDL 幂等：schema_version=1，事件与限流清理索引存在", async () => {
+      const { repo, cleanup } = await makeRepo(provider);
+      await repo.bootstrap();
+      await repo.bootstrap();
+      const info = await repo.schemaInfo();
+      expect(info.version).toBe(1);
+      expect(info.indexes).toEqual(
+        expect.arrayContaining([
+          "idx_events_created_at",
+          "idx_rate_limits_window",
+        ]),
+      );
+      await cleanup();
+    });
+
     test("sendMessageAndEvent 事务双写：返回两个自增 id，messages 与 events 各一行", async () => {
       const { repo, cleanup } = await makeRepo(provider);
       const now = Date.now();
