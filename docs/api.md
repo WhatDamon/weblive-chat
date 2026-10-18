@@ -21,6 +21,7 @@
 规则与细节：
 
 - `before` 与 `since` **互斥**（同时给出 → `400 invalid_body`）。
+- `since=0` 是合法游标，表示**从最早一条开始**（升序）；`before` 则必须 ≥ 1。
 - `limit`：纯数字才合法（`0` 夹到 `1`）；浮点/负数/非数字 → `400 invalid_cursor`。最大值 200。
 - `ephemeral` 模式（历史超限自动降级）下，`GET /api/messages` 恒返回 `{messages: [], mode: "ephemeral"}`。
 - 普通模式响应：`{messages: MessageView[], mode: "full"|"degraded_retention"}`，其中

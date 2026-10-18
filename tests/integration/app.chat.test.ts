@@ -60,6 +60,26 @@ describe("chat 公开端点", () => {
     expect(gb.messages.map((m: any) => m.id)).toEqual([b.id]);
   });
 
+  test("since=0 从最早升序返回，而不是最新一页", async () => {
+    const { app } = await boot();
+    const post = async (i: number) => {
+      const res = await app.request("/api/messages", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-forwarded-for": "1.2.3.4",
+        },
+        body: JSON.stringify({ client_id: UUID, nick: "n", text: `第${i}条` }),
+      });
+      expect(res.status).toBe(201);
+    };
+    for (const i of [1, 2, 3]) await post(i);
+    const j = (await (
+      await app.request("/api/messages?since=0&limit=2")
+    ).json()) as { messages: Array<{ id: string }> };
+    expect(j.messages.map((m) => m.id)).toEqual(["1", "2"]);
+  });
+
   test("错误信封：400 禁词 / 400 uuid / 429 限流（含 retry_after_ms）", async () => {
     const { app } = await boot({
       rate: {

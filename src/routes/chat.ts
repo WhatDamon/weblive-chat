@@ -8,6 +8,7 @@ import { rateCheck } from "../lib/limits";
 import { runStream } from "../lib/stream";
 import {
   parseIdParam,
+  parseSinceParam,
   jsonError,
   readJson,
   failDb,
@@ -65,7 +66,7 @@ export function registerChat(app: Hono<AppEnv>, d: ChatDeps) {
   app.get("/api/messages", async (c) => {
     try {
       const before = parseIdParam(c.req.query("before"));
-      const since = parseIdParam(c.req.query("since"));
+      const since = parseSinceParam(c.req.query("since"));
       if (before !== null && since !== null)
         return jsonError(c, 400, "invalid_body", {
           message: COPY.route.beforeSinceConflict,

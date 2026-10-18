@@ -67,6 +67,13 @@ export async function readJson(
   }
 }
 
+/** 游标 0 是合法的「从最早开始」；before 仍然要求 >= 1（见 parseIdParam）。 */
+export function parseSinceParam(raw: string | undefined): number | null {
+  if (raw === undefined || !/^\d+$/.test(raw)) return null;
+  const n = Number(raw);
+  return Number.isSafeInteger(n) && n >= 0 ? Math.min(n, MAX_ID_BOUND) : null;
+}
+
 export function parseIdParam(raw: string | undefined): number | null {
   if (!raw || !/^\d+$/.test(raw)) return null;
   const n = Number(raw);
