@@ -269,3 +269,38 @@ describe("runStream", () => {
     spy.mockRestore();
   });
 });
+
+describe("流·单 tick 排空", () => {
+  test("突发 250 条事件在一个 poll 周期内全部推送（且游标不丢）", async () => {
+    const events = Array.from({ length: 250 }, (_, i) => ({
+      id: i + 1,
+      type: "message",
+      payload: JSON.stringify({ id: String(i + 1) }),
+      created_at: 1,
+    }));
+    // 这里必须自己实现 limit 语义：复用 fakeRepo 会忽略 limit，测试会假绿。
+    const repo = {
+      eventsSince: async (since: number, limit: number) =>
+        events.filter((e) => e.id > since).slice(0, limit),
+      eventsMaxId: async () => 250,
+      presenceUpsert: async () => {},
+      presenceCount: async () => 1,
+      banGet: async () => null,
+    };
+    const seen: number[] = [];
+    const h = runStream({
+      repo: repo as any,
+      clientId: "c",
+      since: 0,
+      // pollMs 远大于等待时间：整个断言窗口只允许发生「一个」tick，
+      // 否则跨 tick 累积也能凑到 250 条，测不出单 tick 排空。
+      cfg: { ...cfg, pollMs: 10_000, idlePollMs: 10_000, eventProbeMs: 0 },
+      emit: (type, data) => {
+        if (type === "message") seen.push(Number((data as any).id));
+      },
+    });
+    await sleep(60);
+    h.stop();
+    expect(seen).toHaveLength(250);
+  });
+});

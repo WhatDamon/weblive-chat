@@ -31,6 +31,11 @@ export interface StreamOpts {
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+/** 单轮最多取多少条：与 eventsSince 的 LIMIT 约定一致。 */
+const POLL_LIMIT = 100;
+/** 单 tick 最多排空几轮：上限保证一次突发不会把 tick 拖成无限循环。 */
+const MAX_DRAIN_ROUNDS = 5;
+
 export function runStream(o: StreamOpts): { stop: () => void } {
   let stopped = false;
   let since = o.since ?? 0;
@@ -43,30 +48,38 @@ export function runStream(o: StreamOpts): { stop: () => void } {
   const emitComment = o.emitComment ?? (() => {});
 
   const tickPoll = async () => {
-    let rows = await o.repo.eventsSince(since, 100);
-    // Cursor fallback: events behind the cursor were already purged. Probed at most once per
-    // eventProbeMs, otherwise an idle stream would run two queries per tick instead of one.
-    if (
-      rows.length === 0 &&
-      since > 0 &&
-      Date.now() - lastProbe >= o.cfg.eventProbeMs
-    ) {
-      lastProbe = Date.now();
-      const maxId = await o.repo.eventsMaxId();
-      if (since > maxId) since = Math.max(maxId, 0);
-      rows = await o.repo.eventsSince(since, 100);
-    }
     let pushed = 0;
-    for (const e of rows) {
-      since = e.id;
-      let data: unknown = {};
-      try {
-        data = JSON.parse(e.payload);
-      } catch {
-        data = { raw: e.payload };
+    let probed = false;
+    // 一轮只取 100 条，突发时会积压；单 tick 内多排几轮，代价是有上限的额外查询。
+    for (let round = 0; round < MAX_DRAIN_ROUNDS; round++) {
+      let rows = await o.repo.eventsSince(since, POLL_LIMIT);
+      // Cursor fallback: events behind the cursor were already purged. Probed at most once per
+      // eventProbeMs (and once per tick), otherwise an idle stream would double its queries.
+      if (
+        rows.length === 0 &&
+        !probed &&
+        since > 0 &&
+        Date.now() - lastProbe >= o.cfg.eventProbeMs
+      ) {
+        probed = true;
+        lastProbe = Date.now();
+        const maxId = await o.repo.eventsMaxId();
+        if (since > maxId) since = Math.max(maxId, 0);
+        rows = await o.repo.eventsSince(since, POLL_LIMIT);
       }
-      o.emit(e.type, data);
-      pushed++;
+      for (const e of rows) {
+        since = e.id;
+        let data: unknown = {};
+        try {
+          data = JSON.parse(e.payload);
+        } catch {
+          data = { raw: e.payload };
+        }
+        o.emit(e.type, data);
+        pushed++;
+      }
+      // 不足一页说明已经排空，不必再多查一次。
+      if (rows.length < POLL_LIMIT) break;
     }
     // lastSent only advances on real writes, so an idle stream still reaches the heartbeat.
     if (pushed > 0) {
