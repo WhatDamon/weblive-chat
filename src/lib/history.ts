@@ -30,11 +30,10 @@ export interface HistoryState {
   writeCount: number;
   mode: HistoryMode;
   retentionDays: number;
-  noticesSent: { [k in HistoryMode]?: number };
 }
 
 export function newHistoryState(): HistoryState {
-  return { writeCount: 0, mode: "full", retentionDays: 90, noticesSent: {} };
+  return { writeCount: 0, mode: "full", retentionDays: 90 };
 }
 
 export interface HistoryDeps {

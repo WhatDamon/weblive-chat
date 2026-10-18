@@ -114,4 +114,9 @@ describe("loadConfig", () => {
       /BANNED_WORDS_MODE/,
     );
   });
+
+  test("RateCfg 不再包含未使用的 windowMs", () => {
+    const cfg = loadConfig({ ...base });
+    expect("windowMs" in cfg.rate).toBe(false);
+  });
 });

@@ -9,7 +9,6 @@ export interface RateCfg {
   loginPerMin: number;
   /** Preview and execute share this bucket. */
   purgePerMin: number;
-  windowMs: number;
 }
 
 export interface AppConfig {
@@ -99,7 +98,6 @@ export function loadConfig(
     throw new Error(
       `BANNED_WORDS_MODE must be off|basic|strict, got "${bannedWordsMode}"`,
     );
-  const rateWindowMs = 60_000;
   return {
     env: envName,
     port: envInt(env, "PORT", 3000),
@@ -138,7 +136,6 @@ export function loadConfig(
       streamPerMin: envInt(env, "STREAM_RATE_PER_MIN", 20),
       loginPerMin: envInt(env, "LOGIN_RATE_PER_MIN", 5),
       purgePerMin: envInt(env, "PURGE_RATE_PER_MIN", 5),
-      windowMs: rateWindowMs,
     },
     allowedOrigins,
     requireOrigin:

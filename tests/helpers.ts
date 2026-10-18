@@ -68,7 +68,6 @@ export function testCfg(over: Partial<AppConfig> = {}): AppConfig {
       streamPerMin: 20,
       loginPerMin: 5,
       purgePerMin: 5,
-      windowMs: 60_000,
     },
     allowedOrigins: [],
     requireOrigin: false,

@@ -152,7 +152,6 @@ describe("危险操作：清空数据（多重校验）", () => {
     streamPerMin: 20,
     loginPerMin: 5,
     purgePerMin: 10,
-    windowMs: 60_000,
   };
   const IP = "1.1.1.1";
   const bootPurge = (extra: any = {}) => boot({ rate: PURGE_RATE, ...extra });

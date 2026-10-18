@@ -66,7 +66,6 @@ describe("chat 公开端点", () => {
         msgPerMin: 2,
         streamPerMin: 20,
         loginPerMin: 5,
-        windowMs: 60_000,
       },
     });
     const send = (text: string) =>
@@ -331,7 +330,6 @@ describe("SSE 事件流", () => {
         msgPerMin: 10,
         streamPerMin: 1,
         loginPerMin: 5,
-        windowMs: 60_000,
       },
     });
     const ctrl = new AbortController();
