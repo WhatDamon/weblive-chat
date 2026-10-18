@@ -378,3 +378,12 @@ tests/                # bun test（单元为主）
 - **§10 待确认项结果**：双写事务（✓）、静态页随函数 `includeFiles`（✓）、`hono` 4.13 无 `node-serverless` 子路径 → `index.ts` 导出自持懒转发 handler（✓）、`Bun.serve idleTimeout` 上限 255（✓）、开流限流接线（✓）。**剩余仅云端实测**（Vercel 函数 300s/SSE 断线续传/`process.cwd()` 下 `public/` 落盘）——`docs/api.md` 已把断线重连列为客户端义务。
 - **入口导出形态**：`export default { async fetch(request) }`（保留懒启动、无顶层 await）；形态护栏见 `tests/integration/vercel-entry.test.ts`。
 - **用户可见文案单点化**：错误信封、路由提示、两个内置页面的全部文案集中在 `src/lib/copy.ts`；页面响应时注入（HTML 用 `{{a.b}}` 占位符、脚本用 `window.COPY`），页面文件本身不含任何中文，由 `tests/unit/copy.test.ts` 守住该边界。
+
+### 2026-10 优化批次（实现注记）
+
+- 新增 `lib/log.ts`（结构化错误日志）、`lib/metrics.ts`（进程内计数）、`routes/health.ts`。
+- 事件载荷统一由 `lib/events.ts` 构造，三方言不再各自拼 JSON。
+- 维护从请求路径移到 `lib/maintenance.ts` 的调度器；统计 60s 缓存。
+- `messages` 裁剪改用 `idAtOffset`，回溯深度不再整段载入。
+- `purge_used` 账本不再随 `full` 清库删除。
+- 存储层：`Repo` 拆为 `lib/ports.ts` 的 6 个窄接口，路由只依赖所需能力。
