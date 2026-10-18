@@ -32,8 +32,6 @@ export interface StreamOpts {
   sleep?: (ms: number) => Promise<void>;
 }
 
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-
 /** 单轮最多取多少条：与 eventsSince 的 LIMIT 约定一致。 */
 const POLL_LIMIT = 100;
 /** 单 tick 最多排空几轮：上限保证一次突发不会把 tick 拖成无限循环。 */

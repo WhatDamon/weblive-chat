@@ -98,7 +98,7 @@ async function bootPage(
   const dom = createDom();
   const locationShim = {
     origin: opts.location ?? "http://localhost:3000",
-    href: (opts.location ?? "http://localhost:3000") + "/admin",
+    href: `${opts.location ?? "http://localhost:3000"}/admin`,
   };
   new Function(
     "document",

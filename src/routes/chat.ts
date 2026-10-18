@@ -1,6 +1,7 @@
 import type { Context, Hono } from "hono";
 import type { AppConfig } from "../lib/config";
 import type { ChatRepo } from "../lib/ports";
+import type { MessageRow } from "../lib/repo";
 import { MAX_ID_BOUND, type HistoryMode } from "../lib/history";
 import { clientIpFromHeaders } from "../lib/security";
 import { validateMessageBody, validUuid } from "../lib/validate";
@@ -27,7 +28,7 @@ export interface ChatDeps {
 }
 
 const iso = (ms: number) => new Date(ms).toISOString();
-const fmtMessage = (m: any) => ({
+const fmtMessage = (m: MessageRow) => ({
   id: String(m.id),
   client_id: m.client_id,
   nick: m.nick,
@@ -89,7 +90,7 @@ export function registerChat(app: Hono<AppEnv>, d: ChatDeps) {
         });
       if (d.history.mode === "ephemeral")
         return c.json({ messages: [], mode: "ephemeral" });
-      let rows: any[];
+      let rows: MessageRow[];
       if (before !== null) rows = await repo.historyBefore(before, limit);
       else if (since !== null) rows = await repo.historySince(since, limit);
       // MAX_ID_BOUND is the PG int4 cursor ceiling; do not use MAX_SAFE_INTEGER here.
@@ -133,7 +134,7 @@ export function registerChat(app: Hono<AppEnv>, d: ChatDeps) {
           retry_after_ms: rl.retryAfterMs,
         });
       const msg = {
-        client_id: body.client_id as string,
+        client_id: v.client_id,
         nick: v.nick,
         text: v.text,
         created_at: Date.now(),

@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { COPY, fill, lookupCopy } from "../lib/copy";
 import type { AppEnv } from "../lib/http";
+import { logError } from "../lib/log";
 
 // cwd is the repo root locally; vercel.json includeFiles ships public/** to the function.
 const readPublic = async (file: string) => {
@@ -20,12 +21,12 @@ const copyBootstrap = () =>
 /** Replaces {{a.b}} with copy.ts text and <!--COPY--> with the bootstrap script. */
 export function renderPage(html: string): string {
   return html
-    .replace(
-      TOKEN,
-      (raw, path: string) =>
-        lookupCopy(path) ??
-        (console.error(`[copy] undefined placeholder: ${raw}`), raw),
-    )
+    .replace(TOKEN, (raw, path: string) => {
+      const hit = lookupCopy(path);
+      if (hit !== undefined) return hit;
+      logError("pages", new Error(`[copy] undefined placeholder: ${raw}`));
+      return raw;
+    })
     .replace("<!--COPY-->", copyBootstrap());
 }
 

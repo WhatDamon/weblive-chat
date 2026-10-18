@@ -80,7 +80,8 @@ export function verifyPurgeToken(
   secret: string,
 ): PurgeTokenVerdict {
   const p = verifyToken(token, secret);
-  if (!p || p.sub !== "purge" || typeof p.nonce !== "string")
+  if (!p) return { ok: false, reason: "invalid_token" };
+  if (p.sub !== "purge" || typeof p.nonce !== "string")
     return { ok: false, reason: "invalid_token" };
   if (typeof p.exp !== "number") return { ok: false, reason: "invalid_token" };
   if (p.scope !== o.scope) return { ok: false, reason: "token_scope" };

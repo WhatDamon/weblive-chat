@@ -6,7 +6,7 @@ import { makeApp, makeRepo, readSse, testCfg, UUID } from "../helpers";
 import { createAppWithHandle } from "../../src/app";
 import { createMaintenance } from "../../src/lib/maintenance";
 
-let cleanups: (() => Promise<void>)[] = [];
+const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
   while (cleanups.length) await cleanups.pop()!();
 });

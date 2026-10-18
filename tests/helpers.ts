@@ -131,8 +131,10 @@ export async function readSse(
     const { done, value } = await reader.read();
     if (done) break;
     buf += decoder.decode(value, { stream: true });
-    let idx;
-    while ((idx = buf.indexOf("\n\n")) >= 0) {
+    for (;;) {
+      // 每轮重新定位：下面的 continue 不能跳过游标推进，否则死循环。
+      const idx = buf.indexOf("\n\n");
+      if (idx < 0) break;
       const block = buf.slice(0, idx);
       buf = buf.slice(idx + 2);
       const lines = block.split("\n");

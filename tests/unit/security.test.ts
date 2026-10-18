@@ -156,7 +156,7 @@ describe("HMAC 会话 Cookie", () => {
   test("sign+verify 往返；篡改/过期/换密钥均拒绝", () => {
     const token = signToken({ sub: "admin", exp: Date.now() + 60_000 }, secret);
     expect(verifyToken(token, secret)).toMatchObject({ sub: "admin" });
-    expect(verifyToken(token.slice(0, -2) + "xx", secret)).toBeNull();
+    expect(verifyToken(`${token.slice(0, -2)}xx`, secret)).toBeNull();
     expect(
       verifyToken(
         signToken({ sub: "admin", exp: Date.now() - 1 }, secret),

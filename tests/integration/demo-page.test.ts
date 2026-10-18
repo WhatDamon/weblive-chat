@@ -57,7 +57,8 @@ function createDom() {
     },
     createElement: (tag: string) => make(tag),
     addEventListener(type: string, fn: (e?: any) => void) {
-      (listeners[type] ||= []).push(fn);
+      if (!listeners[type]) listeners[type] = [];
+      listeners[type].push(fn);
     },
   };
   const setVisibility = (state: string) => {

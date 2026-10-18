@@ -1,4 +1,4 @@
-import { createClient, type Client } from "@libsql/client";
+import { createClient, type Client, type InValue } from "@libsql/client";
 import postgres from "postgres";
 import type { AppConfig, Provider } from "./config";
 import { ddlFor } from "./ddl";
@@ -65,25 +65,40 @@ export interface Repo
   close(): Promise<void>;
 }
 
-const mapMessage = (r: any): MessageRow => ({
-  id: Number(r.id),
-  client_id: r.client_id,
-  nick: r.nick,
-  text: r.deleted_at === null || r.deleted_at === undefined ? r.text : null,
-  created_at: Number(r.created_at),
-  deleted: !(r.deleted_at === null || r.deleted_at === undefined),
-  deleted_at:
-    r.deleted_at === null || r.deleted_at === undefined
-      ? null
-      : Number(r.deleted_at),
+/** 驱动返回的行：列名未知、值未知，收窄责任落在下面的助手函数上。 */
+type Row = Record<string, unknown>;
+
+/**
+ * 驱动边界：postgres.js 的 unsafe() 只接受它自己的参数类型，与 unknown[] 没有交集。
+ * 参数语义由调用点的 SQL 决定，所以在这里做唯一一次显式转换，而不是在各个调用点逃逸类型。
+ */
+const asPgArgs = (args: readonly unknown[]) => args as unknown as never[];
+
+const num = (v: unknown): number => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+};
+const str = (v: unknown): string => (typeof v === "string" ? v : "");
+const isNullish = (v: unknown): boolean => v === null || v === undefined;
+const nullableNum = (v: unknown): number | null =>
+  isNullish(v) ? null : num(v);
+
+const mapMessage = (r: Row): MessageRow => ({
+  id: num(r.id),
+  client_id: str(r.client_id),
+  nick: str(r.nick),
+  text: isNullish(r.deleted_at) ? str(r.text) : null,
+  created_at: num(r.created_at),
+  deleted: !isNullish(r.deleted_at),
+  deleted_at: nullableNum(r.deleted_at),
 });
 
 /** PG returns bigint columns as strings, so both drivers normalize ids/timestamps to number. */
-const mapEvent = (r: any): EventRow => ({
-  id: Number(r.id),
-  type: r.type,
-  payload: r.payload,
-  created_at: Number(r.created_at),
+const mapEvent = (r: Row): EventRow => ({
+  id: num(r.id),
+  type: str(r.type),
+  payload: str(r.payload),
+  created_at: num(r.created_at),
 });
 
 // Portable templates using ? placeholders; each dialect appends RETURNING or wraps in a tx.
@@ -193,12 +208,12 @@ class SqliteRepo implements Repo {
     this.c.close();
   }
   private async run<T>(sql: string, args: unknown[]): Promise<T> {
-    const r = await this.c.execute({ sql, args: args as any[] });
+    const r = await this.c.execute({ sql, args: args as InValue[] });
     // SAFETY: libsql returns primitives; the caller's row type does the normalization.
     return r.rows as unknown as T;
   }
   private async exec(sql: string, args: unknown[] = []): Promise<void> {
-    await this.c.execute({ sql, args: args as any[] });
+    await this.c.execute({ sql, args: args as InValue[] });
   }
 
   async sendMessageAndEvent(
@@ -247,23 +262,23 @@ class SqliteRepo implements Repo {
     return Number(r.lastInsertRowid);
   }
   async eventsSince(since: number, limit: number): Promise<EventRow[]> {
-    return (await this.run<any[]>(SQL.eventsSince, [since, limit])).map(
+    return (await this.run<Row[]>(SQL.eventsSince, [since, limit])).map(
       mapEvent,
     );
   }
   async eventsMaxId(): Promise<number> {
-    const r = await this.run<any[]>(SQL.maxEventId, []);
+    const r = await this.run<Row[]>(SQL.maxEventId, []);
     return Number(r[0]?.m ?? 0);
   }
   async historyBefore(before: number, limit: number): Promise<MessageRow[]> {
-    return (await this.run<any[]>(SQL.before, [before, limit])).map(mapMessage);
+    return (await this.run<Row[]>(SQL.before, [before, limit])).map(mapMessage);
   }
   async idAtOffset(offset: number): Promise<number | null> {
     const r = await this.run<{ id: number }[]>(SQL.idAtOffset, [offset]);
     return r[0] ? Number(r[0].id) : null;
   }
   async historySince(since: number, limit: number): Promise<MessageRow[]> {
-    return (await this.run<any[]>(SQL.since, [since, limit])).map(mapMessage);
+    return (await this.run<Row[]>(SQL.since, [since, limit])).map(mapMessage);
   }
   async softDeleteMessageAndEvent(
     id: number,
@@ -315,17 +330,17 @@ class SqliteRepo implements Repo {
   async banGet(
     ip: string,
   ): Promise<{ reason: string; created_at: number } | null> {
-    const r = await this.run<any[]>(SQL.banGet, [ip]);
+    const r = await this.run<Row[]>(SQL.banGet, [ip]);
     return r[0]
-      ? { reason: r[0].reason, created_at: Number(r[0].created_at) }
+      ? { reason: str(r[0].reason), created_at: num(r[0].created_at) }
       : null;
   }
   async banList(limit: number, offset: number): Promise<BanRow[]> {
-    return this.run<any[]>(SQL.banList, [limit, offset]).then((rs) =>
+    return this.run<Row[]>(SQL.banList, [limit, offset]).then((rs) =>
       rs.map((r) => ({
-        ip: r.ip,
-        reason: r.reason,
-        created_at: Number(r.created_at),
+        ip: str(r.ip),
+        reason: str(r.reason),
+        created_at: num(r.created_at),
       })),
     );
   }
@@ -337,7 +352,7 @@ class SqliteRepo implements Repo {
     await this.exec(SQL.presUp, [clientId, at]);
   }
   async presenceCount(cutoff: number): Promise<number> {
-    const r = await this.run<any[]>(SQL.presCnt, [cutoff]);
+    const r = await this.run<Row[]>(SQL.presCnt, [cutoff]);
     return Number(r[0]?.c ?? 0);
   }
   async rateHit(
@@ -345,11 +360,11 @@ class SqliteRepo implements Repo {
     scope: string,
     windowStart: number,
   ): Promise<number> {
-    const r = await this.run<any[]>(SQL.rateHit, [bucket, scope, windowStart]);
+    const r = await this.run<Row[]>(SQL.rateHit, [bucket, scope, windowStart]);
     return Number(r[0]?.count ?? 1);
   }
   async messageStats(): Promise<{ total: number; retained: number }> {
-    const r = await this.run<any[]>(SQL.stats, []);
+    const r = await this.run<Row[]>(SQL.stats, []);
     const total = Number(r[0]?.total ?? 0);
     return { total, retained: total };
   }
@@ -390,18 +405,18 @@ class SqliteRepo implements Repo {
     return out;
   }
   private async countOf(sql: string): Promise<number> {
-    const r = await this.run<any[]>(sql, []);
+    const r = await this.run<Row[]>(sql, []);
     return Number(r[0]?.c ?? 0);
   }
   private async affected(sql: string, args: unknown[]): Promise<number> {
-    const r = await this.c.execute({ sql, args: args as any[] });
+    const r = await this.c.execute({ sql, args: args as InValue[] });
     return Number(r.rowsAffected);
   }
 }
 
 class PostgresRepo implements Repo {
   readonly provider = "postgres" as const;
-  constructor(private sql: postgres.Sql<{}>) {}
+  constructor(private sql: postgres.Sql<Record<string, never>>) {}
   async bootstrap(): Promise<void> {
     for (const d of ddlFor("postgres")) await this.sql.unsafe(d);
   }
@@ -423,7 +438,7 @@ class PostgresRepo implements Repo {
   async close(): Promise<void> {
     await this.sql.end();
   }
-  private toPgParams(sql: string, args: any[]) {
+  private toPgParams(sql: string, args: readonly unknown[]) {
     let i = 0;
     const converted = sql.replace(/\?/g, () => `$${++i}`);
     return { sql: converted, args };
@@ -431,11 +446,11 @@ class PostgresRepo implements Repo {
   private async query<T>(sql: string, args: unknown[]): Promise<T[]> {
     const { sql: s, args: a } = this.toPgParams(sql, args);
     // SAFETY: postgres.js unsafe() returns a RowList; column contracts live at the call sites.
-    return (await this.sql.unsafe(s, a)) as unknown as T[];
+    return (await this.sql.unsafe(s, asPgArgs(a))) as unknown as T[];
   }
   private async exec(sql: string, args: unknown[]): Promise<void> {
     const { sql: s, args: a } = this.toPgParams(sql, args);
-    await this.sql.unsafe(s, a);
+    await this.sql.unsafe(s, asPgArgs(a));
   }
   async clearData(scope: PurgeScope): Promise<PurgeCounts> {
     return await this.sql.begin(async (tx) => {
@@ -458,28 +473,28 @@ class PostgresRepo implements Repo {
   }
   private async countAffected(sql: string, args: unknown[]): Promise<number> {
     const { sql: s, args: a } = this.toPgParams(sql, args);
-    const r = await this.sql.unsafe(s, a);
-    return r.count === undefined ? 0 : Number(r.count);
+    const r = await this.sql.unsafe(s, asPgArgs(a));
+    return r.count === undefined ? 0 : num(r.count);
   }
   async sendMessageAndEvent(
     m: MessageInput,
   ): Promise<{ messageId: number; eventId: number }> {
     return await this.sql.begin(async (tx) => {
-      const insMsg = this.toPgParams(SQL.insMessage + " RETURNING id", [
+      const insMsg = this.toPgParams(`${SQL.insMessage} RETURNING id`, [
         m.client_id,
         m.nick,
         m.text,
         m.created_at,
       ]);
-      const [msg] = await tx.unsafe(insMsg.sql, insMsg.args);
+      const [msg] = await tx.unsafe(insMsg.sql, asPgArgs(insMsg.args));
       const messageId = Number(msg.id);
       const payload = JSON.stringify(messageEventPayload(m, messageId));
-      const insEv = this.toPgParams(SQL.insEvent + " RETURNING id", [
+      const insEv = this.toPgParams(`${SQL.insEvent} RETURNING id`, [
         "message",
         payload,
         m.created_at,
       ]);
-      const [ev] = await tx.unsafe(insEv.sql, insEv.args);
+      const [ev] = await tx.unsafe(insEv.sql, asPgArgs(insEv.args));
       return { messageId, eventId: Number(ev.id) };
     });
   }
@@ -497,7 +512,7 @@ class PostgresRepo implements Repo {
     payload: string,
     created_at: number,
   ): Promise<number> {
-    const r = await this.query<{ id: number }>(SQL.insEvent + " RETURNING id", [
+    const r = await this.query<{ id: number }>(`${SQL.insEvent} RETURNING id`, [
       type,
       payload,
       created_at,
@@ -505,7 +520,7 @@ class PostgresRepo implements Repo {
     return Number(r[0]?.id ?? 0);
   }
   async eventsSince(since: number, limit: number): Promise<EventRow[]> {
-    return (await this.query<any>(SQL.eventsSince, [since, limit])).map(
+    return (await this.query<Row>(SQL.eventsSince, [since, limit])).map(
       mapEvent,
     );
   }
@@ -514,14 +529,14 @@ class PostgresRepo implements Repo {
     return Number(r[0]?.m ?? 0);
   }
   async historyBefore(before: number, limit: number): Promise<MessageRow[]> {
-    return (await this.query<any>(SQL.before, [before, limit])).map(mapMessage);
+    return (await this.query<Row>(SQL.before, [before, limit])).map(mapMessage);
   }
   async idAtOffset(offset: number): Promise<number | null> {
     const r = await this.query<{ id: number }>(SQL.idAtOffset, [offset]);
     return r[0] ? Number(r[0].id) : null;
   }
   async historySince(since: number, limit: number): Promise<MessageRow[]> {
-    return (await this.query<any>(SQL.since, [since, limit])).map(mapMessage);
+    return (await this.query<Row>(SQL.since, [since, limit])).map(mapMessage);
   }
   async softDeleteMessageAndEvent(
     id: number,
@@ -530,14 +545,14 @@ class PostgresRepo implements Repo {
   ): Promise<boolean> {
     return await this.sql.begin(async (tx) => {
       const del = this.toPgParams(SQL.softDel, [at, by, id]);
-      const r = await tx.unsafe(del.sql, del.args);
+      const r = await tx.unsafe(del.sql, asPgArgs(del.args));
       if (!r.count) return false;
       const ins = this.toPgParams(SQL.insEvent, [
         "delete",
         JSON.stringify(deleteEventPayload(id)),
         at,
       ]);
-      await tx.unsafe(ins.sql, ins.args);
+      await tx.unsafe(ins.sql, asPgArgs(ins.args));
       return true;
     });
   }
@@ -558,16 +573,16 @@ class PostgresRepo implements Repo {
   async banGet(
     ip: string,
   ): Promise<{ reason: string; created_at: number } | null> {
-    const r = await this.query<any>(SQL.banGet, [ip]);
+    const r = await this.query<Row>(SQL.banGet, [ip]);
     return r[0]
-      ? { reason: r[0].reason, created_at: Number(r[0].created_at) }
+      ? { reason: str(r[0].reason), created_at: num(r[0].created_at) }
       : null;
   }
   async banList(limit: number, offset: number): Promise<BanRow[]> {
-    return (await this.query<any>(SQL.banList, [limit, offset])).map((r) => ({
-      ip: r.ip,
-      reason: r.reason,
-      created_at: Number(r.created_at),
+    return (await this.query<Row>(SQL.banList, [limit, offset])).map((r) => ({
+      ip: str(r.ip),
+      reason: str(r.reason),
+      created_at: num(r.created_at),
     }));
   }
   async banRemove(ip: string): Promise<boolean> {
@@ -630,6 +645,23 @@ interface MemEvent {
   payload: string;
   created_at: number;
 }
+/** 内存实现手里已是强类型对象，直接投影，不必经过驱动边界的 Row 收窄。 */
+const memMessageRow = (m: MemMessage): MessageRow => ({
+  id: m.id,
+  client_id: m.client_id,
+  nick: m.nick,
+  text: isNullish(m.deleted_at) ? m.text : null,
+  created_at: m.created_at,
+  deleted: !isNullish(m.deleted_at),
+  deleted_at: m.deleted_at,
+});
+const memEventRow = (e: MemEvent): EventRow => ({
+  id: e.id,
+  type: e.type,
+  payload: e.payload,
+  created_at: e.created_at,
+});
+
 class MemoryRepo implements Repo {
   readonly provider = "memory" as const;
   private msgSeq = 0;
@@ -699,7 +731,7 @@ class MemoryRepo implements Repo {
     return this.events
       .filter((e) => e.id > since)
       .slice(0, limit)
-      .map(mapEvent);
+      .map(memEventRow);
   }
   async eventsMaxId(): Promise<number> {
     return this.events.length ? this.events[this.events.length - 1].id : 0;
@@ -714,14 +746,14 @@ class MemoryRepo implements Repo {
       .filter((r) => r.id < before)
       .sort((a, b) => b.id - a.id) // matches ORDER BY id DESC
       .slice(0, limit)
-      .map(mapMessage);
+      .map(memMessageRow);
   }
   async historySince(since: number, limit: number): Promise<MessageRow[]> {
     return this.messages
       .filter((r) => r.id > since)
       .sort((a, b) => a.id - b.id)
       .slice(0, limit)
-      .map(mapMessage);
+      .map(memMessageRow);
   }
   async softDeleteMessageAndEvent(
     id: number,

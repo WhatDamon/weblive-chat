@@ -6,6 +6,7 @@ export const validUuid = (s: string) => UUID_RE.test(s);
 
 export function sanitizeText(s: string): string {
   // Strips control chars; newlines cannot survive SSE data lines anyway.
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: 控制字符正是要清理的目标
   return s.replace(/[\u0000-\u001f\u007f]/g, "").trim();
 }
 
@@ -21,7 +22,7 @@ export type MsgErr =
         | "banned_word";
       field: string;
     }
-  | { ok: true; nick: string; text: string };
+  | { ok: true; client_id: string; nick: string; text: string };
 
 export function validateMessageBody(
   cfg: {
@@ -48,7 +49,7 @@ export function validateMessageBody(
   const textHit = matcher.scan(text) ? ("text" as const) : null;
   const hit = textHit ?? (matcher.scan(nick) ? ("nick" as const) : null);
   if (hit) return { ok: false, code: "banned_word", field: hit };
-  return { ok: true, nick, text };
+  return { ok: true, client_id, nick, text };
 }
 
 // Fallback matcher used when no filter is injected (tests, direct calls); cached per word list.

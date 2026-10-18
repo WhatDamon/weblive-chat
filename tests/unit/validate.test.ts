@@ -33,7 +33,12 @@ describe("validateMessageBody", () => {
         nick: " 甲 ",
         text: "你好世界",
       }),
-    ).toEqual({ ok: true, nick: "甲", text: "你好世界" });
+    ).toEqual({
+      ok: true,
+      client_id: "11111111-2222-4333-8444-555555555555",
+      nick: "甲",
+      text: "你好世界",
+    });
   });
   test("uuid 非法 / 昵称超长 / 文本超长 / 禁词（子串）各自失败", () => {
     expectCode({ client_id: "nope", nick: "甲", text: "hi" }, "invalid_uuid");
@@ -93,6 +98,7 @@ describe("validateMessageBody", () => {
     });
     expect(validateMessageBody(cfgF, body("甲", "违禁词豁免示例"))).toEqual({
       ok: true,
+      client_id: "11111111-2222-4333-8444-555555555555",
       nick: "甲",
       text: "违禁词豁免示例",
     });
