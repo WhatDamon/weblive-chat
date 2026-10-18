@@ -58,6 +58,12 @@ function historyDeps(over: Record<string, any> = {}) {
   };
 }
 
+describe("newHistoryState", () => {
+  test("不再携带 writeCount（维护计数已交给 lib/maintenance.ts，双份计数只会漂移）", () => {
+    expect("writeCount" in newHistoryState()).toBe(false);
+  });
+});
+
 describe("decideHistory", () => {
   test("远低于上限 → full 且保留配置天数", () => {
     expect(decideHistory({ retained: 100 }, cfg)).toEqual({

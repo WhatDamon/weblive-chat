@@ -2,7 +2,9 @@ import { describe, expect, test, afterEach } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { makeApp, readSse, UUID } from "../helpers";
+import { makeApp, makeRepo, readSse, testCfg, UUID } from "../helpers";
+import { createAppWithHandle } from "../../src/app";
+import { createMaintenance } from "../../src/lib/maintenance";
 
 let cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -356,13 +358,13 @@ describe("chat 公开端点", () => {
 
   test("维护触发：接近 maxRows 广播 notice；到顶 → ephemeral 停写历史", async () => {
     // statsTtlMs:0 = 每次维护都重数（该用例断言的是精确行数，不能被 60s 缓存挡住）。
-    const { app, repo } = await boot({
+    const { app, repo, maintenance } = await boot({
       maxRows: 4,
       maintenanceEvery: 1,
       statsTtlMs: 0,
     });
-    const send = () =>
-      app.request("/api/messages", {
+    const send = async () => {
+      const r = await app.request("/api/messages", {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -370,6 +372,10 @@ describe("chat 公开端点", () => {
         },
         body: JSON.stringify({ client_id: UUID, nick: "n", text: "x" }),
       });
+      // 维护已异步化：靠 flush() 拿到确定时机，而不是赌它刚好跑完。
+      await maintenance.flush();
+      return r;
+    };
     for (let i = 0; i < 4; i++) {
       const r = await send();
       expect(r.status).toBe(201);
@@ -387,6 +393,41 @@ describe("chat 公开端点", () => {
     expect(JSON.parse(msgEvs[msgEvs.length - 1].payload).id).toMatch(
       /^e[0-9a-f-]{36}$/,
     );
+  });
+
+  test("POST 不等待维护：慢速清理进行中，响应已返回", async () => {
+    const { repo, cleanup } = await makeRepo("memory");
+    let openGate: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      openGate = r;
+    });
+    let started = 0;
+    const maintenance = createMaintenance({
+      every: 1,
+      run: async () => {
+        started += 1;
+        await gate; // 模拟一次慢清理（大表裁剪）
+      },
+    });
+    const { app } = createAppWithHandle({
+      cfg: testCfg({ maintenanceEvery: 1 }),
+      repo,
+      maintenance,
+    });
+    const r = await app.request("/api/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-forwarded-for": "4.4.4.9",
+      },
+      body: JSON.stringify({ client_id: UUID, nick: "n", text: "hi" }),
+    });
+    expect(r.status).toBe(201);
+    expect(started).toBe(1); // 维护确实被触发了……
+    // ……但响应没有等它：清理要等 gate 打开才结束，而上面已经拿到 201。
+    openGate();
+    await maintenance.flush();
+    await cleanup();
   });
 
   test("DB 故障：GET /api/messages → 503 db_unavailable 信封（非 500）", async () => {

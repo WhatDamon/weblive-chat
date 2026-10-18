@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRepo } from "../src/lib/repo";
 import type { Repo } from "../src/lib/repo";
-import { createApp } from "../src/app";
+import { createAppWithHandle } from "../src/app";
 import type { AppConfig, Provider } from "../src/lib/config";
 
 export type TestProvider = Provider;
@@ -89,11 +89,13 @@ export async function makeApp(
     const cfg = testCfg({ ...over, dbProvider: "memory", databaseUrl: "" });
     const repo = await createRepo("memory", "");
     await repo.bootstrap();
-    const app = createApp({ cfg, repo });
+    // handle 里的 maintenance 让测试能用 flush() 等维护确定完成
+    const { app, maintenance } = createAppWithHandle({ cfg, repo });
     return {
       cfg,
       app,
       repo,
+      maintenance,
       cleanup: async () => {
         await repo.close();
       },
@@ -104,11 +106,12 @@ export async function makeApp(
   const cfg = testCfg({ ...over, databaseUrl: `file:${join(dir, "t.db")}` });
   const repo = await createRepo("sqlite", cfg.databaseUrl);
   await repo.bootstrap();
-  const app = createApp({ cfg, repo });
+  const { app, maintenance } = createAppWithHandle({ cfg, repo });
   return {
     cfg,
     app,
     repo,
+    maintenance,
     cleanup: async () => {
       await repo.close();
       rmSync(dir, { recursive: true, force: true });

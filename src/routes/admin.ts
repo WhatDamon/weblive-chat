@@ -36,9 +36,7 @@ export interface AdminDeps {
   cfg: AppConfig;
   repo: Repo;
   history: { retentionDays: number; mode: HistoryMode };
-  maintain: (
-    now?: number,
-  ) => Promise<{ mode: HistoryMode; retentionDays: number }>;
+  maintain: (now?: number) => { mode: HistoryMode; retentionDays: number };
 }
 
 const COOKIE_FLAGS = "HttpOnly; SameSite=Lax; Path=/";
@@ -123,7 +121,7 @@ export function registerAdmin(app: Hono<AppEnv>, d: AdminDeps) {
     try {
       const stats = await repo.messageStats();
       const online = await repo.presenceCount(Date.now() - cfg.presenceTtlMs);
-      const hist = await d.maintain();
+      const hist = d.maintain();
       return c.json({
         online,
         messages_total: stats.total,

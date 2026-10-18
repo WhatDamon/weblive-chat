@@ -27,7 +27,6 @@ export function decideHistory(
 }
 
 export interface HistoryState {
-  writeCount: number;
   mode: HistoryMode;
   retentionDays: number;
   /** 最近一次 COUNT 的结果与时间：短时间内重复维护不必再扫表。 */
@@ -36,7 +35,6 @@ export interface HistoryState {
 
 export function newHistoryState(): HistoryState {
   return {
-    writeCount: 0,
     mode: "full",
     retentionDays: 90,
     stats: null,

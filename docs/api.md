@@ -76,7 +76,7 @@
 | `POST /api/admin/bans` | body `{ip, reason?}` → `200 {created: boolean, ip}`；**幂等 upsert**：重复封禁覆盖 reason 并回 `created:false`（无 409）；ip 不合法 → `400 invalid_body` |
 | `DELETE /api/admin/bans/:ip` | 解封 → `204`；不存在 → `404 not_found` |
 | `DELETE /api/admin/messages/:id` | **软删**（占位保留、内容清空、`deleted_by='admin'`，不存操作者 IP）并广播 `delete` 事件 → `204`；不存在 → `404 not_found` |
-| `GET /api/admin/stats` | `{online, messages_total, messages_retained, history:{mode, retention_days, estimate_bytes}, runtime}`（`runtime` 同 `/api/health`） —— `messages_total`/`messages_retained` 同为**物理行数**（含软删占位）；`estimate_bytes = retained × 400`；读取触发一次维护评估（刷新档位/清理） |
+| `GET /api/admin/stats` | `{online, messages_total, messages_retained, history:{mode, retention_days, estimate_bytes}, runtime}`（`runtime` 同 `/api/health`） —— `messages_total`/`messages_retained` 同为**物理行数**（含软删占位）；`estimate_bytes = retained × 400`；读取会触发一次维护评估，但**不等待**它完成（清理在后台跑，档位可能滞后一轮） |
 | `POST /api/admin/purge/preview` | 危险操作·预检（**只读**）：body `{scope}`（`chat`/`full`）→ `200 {scope, scope_desc, will_delete, keep, counts, confirm_phrase, token, expires_at}`；非法 scope → `400 invalid_body` |
 | `POST /api/admin/purge` | 危险操作·执行：body `{scope, token, confirm, secret}` → `200 {scope, deleted}`；短语不符 → `400 invalid_confirm`；口令错 → `401 invalid_secret`；令牌无效/过期/复用 → `400 invalid_token` |
 

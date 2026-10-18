@@ -22,9 +22,7 @@ export interface ChatDeps {
   cfg: AppConfig;
   repo: Repo;
   history: { mode: HistoryMode; retentionDays: number };
-  maintain?: (
-    now?: number,
-  ) => Promise<{ mode: HistoryMode; retentionDays: number }>;
+  maintain?: (now?: number) => { mode: HistoryMode; retentionDays: number };
   getFilter?: () => Promise<WordFilter>;
 }
 
@@ -143,11 +141,11 @@ export function registerChat(app: Hono<AppEnv>, d: ChatDeps) {
       if (d.history.mode === "ephemeral") {
         // Ephemeral mode writes only events; the "e" prefix avoids the messages.id space.
         const { messageId } = await repo.publishEphemeralMessage(msg);
-        await d.maintain?.();
+        d.maintain?.();
         return c.json({ id: messageId, created_at: iso(msg.created_at) }, 201);
       }
       const { messageId } = await repo.sendMessageAndEvent(msg);
-      await d.maintain?.();
+      d.maintain?.();
       return c.json(
         { id: String(messageId), created_at: iso(msg.created_at) },
         201,

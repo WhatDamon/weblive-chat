@@ -9,6 +9,7 @@ import { registerHealth } from "./routes/health";
 import { registerAdmin } from "./routes/admin";
 import { registerPages } from "./routes/pages";
 import { newHistoryState, performMaintenance } from "./lib/history";
+import { createMaintenance, type Maintenance } from "./lib/maintenance";
 import {
   buildWordFilter,
   loadWordFilter,
@@ -18,9 +19,20 @@ import {
 export interface AppDeps {
   cfg: AppConfig;
   repo: Repo;
+  /** 测试可注入自己的调度器（用 flush() 等确定性的时机）。 */
+  maintenance?: Maintenance;
+}
+
+export interface AppHandle {
+  app: Hono<AppEnv>;
+  maintenance: Maintenance;
 }
 
 export function createApp(deps: AppDeps): Hono<AppEnv> {
+  return createAppWithHandle(deps).app;
+}
+
+export function createAppWithHandle(deps: AppDeps): AppHandle {
   const { cfg, repo } = deps;
   const history = newHistoryState();
   // Seed before the first maintenance so /api/meta reports the configured retention.
@@ -121,33 +133,45 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
     await next();
   });
 
-  // Shared by chat and admin so history mode and write counts have one source of truth.
-  const maintain = async (now = Date.now()) => {
-    history.writeCount += 1;
-    if (history.writeCount % cfg.maintenanceEvery !== 0)
-      return { mode: history.mode, retentionDays: history.retentionDays };
-    const res = await performMaintenance({ repo, cfg, state: history }, now);
-    if (
-      res.mode !== history.mode ||
-      res.retentionDays !== history.retentionDays
-    ) {
-      const prev = history.mode;
-      history.mode = res.mode;
-      history.retentionDays = res.retentionDays;
-      if (prev !== res.mode) {
-        await repo
-          .insertEvent(
-            "notice",
-            JSON.stringify({
-              kind: "history_mode",
-              mode: res.mode,
-              retention_days: res.retentionDays,
-            }),
-            now,
-          )
-          .catch(() => {});
-      }
-    }
+  // 维护在后台跑：写请求只记账，不再替清理付尾延迟。
+  const maint =
+    deps.maintenance ??
+    createMaintenance({
+      every: cfg.maintenanceEvery,
+      run: async (now) => {
+        const res = await performMaintenance(
+          { repo, cfg, state: history },
+          now,
+        );
+        if (
+          res.mode !== history.mode ||
+          res.retentionDays !== history.retentionDays
+        ) {
+          const prev = history.mode;
+          history.mode = res.mode;
+          history.retentionDays = res.retentionDays;
+          // 只在档位本身变化时广播：天数微调不值得打扰所有客户端。
+          if (prev !== res.mode) {
+            await repo
+              .insertEvent(
+                "notice",
+                JSON.stringify({
+                  kind: "history_mode",
+                  mode: res.mode,
+                  retention_days: res.retentionDays,
+                }),
+                now,
+              )
+              .catch(() => {});
+          }
+        }
+      },
+      onError: (err) => logError("maintenance", err),
+    });
+
+  // Sync by design: the caller must never wait on cleanup.
+  const maintain = (now = Date.now()) => {
+    maint.hit(now);
     return { mode: history.mode, retentionDays: history.retentionDays };
   };
 
@@ -180,7 +204,7 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
   // Admin routes rely on the /api/* middleware for the origin gate and CORS headers.
   registerAdmin(app, { cfg, repo, history, maintain });
   registerPages(app);
-  return app;
+  return { app, maintenance: maint };
 }
 
 /** Production wiring; `env` must be passed explicitly or every env var is ignored. */

@@ -126,7 +126,7 @@ describe("memory 驱动 app 契约", () => {
   });
 
   test("存储压力自动降级（ephemeral）在 memory 上：触顶停写历史、广播继续、notice 落 events", async () => {
-    const { app, repo } = await bootMemory({
+    const { app, repo, maintenance } = await bootMemory({
       maxRows: 4,
       maintenanceEvery: 1,
       // 该用例断言精确行数：关掉统计缓存，每次维护都重数。
@@ -143,6 +143,8 @@ describe("memory 驱动 app 契约", () => {
         }),
       });
       expect(r.status).toBe(201);
+      // 维护已异步化：靠 flush() 拿到确定时机，而不是赌它刚好跑完。
+      await maintenance.flush();
     }
     // at the row cap the 5th write goes ephemeral: no messages row, e-prefixed id
     const stats = await repo.messageStats();
