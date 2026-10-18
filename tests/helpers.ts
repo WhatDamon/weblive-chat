@@ -72,6 +72,7 @@ export function testCfg(over: Partial<AppConfig> = {}): AppConfig {
     },
     allowedOrigins: [],
     requireOrigin: false,
+    adminRequireOrigin: false,
     sessionDays: 7,
     cookieName: "wl_admin",
   };

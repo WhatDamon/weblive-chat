@@ -61,6 +61,7 @@ turso db tokens create weblive-chat   # → TURSO_AUTH_TOKEN
 | `TURSO_AUTH_TOKEN` | 空 | 仅 Turso（`libsql://`）需要 |
 | `ALLOWED_ORIGINS` | 空（开放） | 逗号分隔 Origin，支持 `*.damon233.top` 通配整域；设置后即 fail-closed |
 | `REQUIRE_ORIGIN` | `0` | `1` 时无 Origin 的直连（curl/脚本）也拒绝 |
+| `ADMIN_REQUIRE_ORIGIN` | 生产开 / 本地关 | 管理写操作（封禁、删消息、清库）必须同源；读接口不受限 |
 | `NODE_ENV` | `development` | Vercel 自动设为 `production` |
 
 其余可调项（限流 `MSG_RATE_PER_MIN` / `STREAM_RATE_PER_MIN` / `LOGIN_RATE_PER_MIN` / `RATE_HISTORY_PER_MIN` / `PURGE_RATE_PER_MIN`、长度上限、历史保留、违禁词、会话天数、维护频率等）见 **[`.env.example`](.env.example)**，每项带注释。

@@ -45,6 +45,8 @@ export interface AppConfig {
   rate: RateCfg;
   allowedOrigins: string[];
   requireOrigin: boolean;
+  /** 管理写操作必须同源；生产默认开启（公开 API 的 ALLOWED_ORIGINS 不参与）。 */
+  adminRequireOrigin: boolean;
   sessionDays: number;
   cookieName: string;
 }
@@ -149,6 +151,13 @@ export function loadConfig(
     requireOrigin:
       (env.REQUIRE_ORIGIN ?? "false") === "1" ||
       (env.REQUIRE_ORIGIN ?? "").toLowerCase() === "true",
+    adminRequireOrigin: (() => {
+      const raw = (env.ADMIN_REQUIRE_ORIGIN ?? "").trim().toLowerCase();
+      if (raw === "1" || raw === "true") return true;
+      if (raw === "0" || raw === "false") return false;
+      // 未设置：生产默认开启，本地/测试默认关闭。
+      return envName === "production";
+    })(),
     sessionDays: envInt(env, "ADMIN_SESSION_DAYS", 7),
     cookieName: "wl_admin",
   };

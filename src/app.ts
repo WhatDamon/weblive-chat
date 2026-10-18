@@ -153,6 +153,30 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
 
   registerHealth(app, { cfg, repo, history });
   registerChat(app, { cfg, repo, history, maintain, getFilter });
+  // 管理写操作的同源校验：必须在 registerAdmin 之前注册，否则跑在路由之后等于没拦。
+  // 故意不看 ALLOWED_ORIGINS：公开 API 的跨站 allowlist 不该顺带授权删库/封禁。
+  app.use("/api/admin/*", async (c, next) => {
+    if (!cfg.adminRequireOrigin) return next();
+    const m = c.req.method;
+    if (m === "GET" || m === "HEAD" || m === "OPTIONS") return next();
+    const origin = c.req.header("origin");
+    if (!origin) return jsonError(c, 403, "missing_origin");
+    const host =
+      c.req.header("x-forwarded-host") ??
+      c.req.header("host") ??
+      // 某些运行时（含测试里的 Request）不带 host 头，只能从 URL 取。
+      new URL(c.req.url).host;
+    const proto = (
+      c.req.header("x-forwarded-proto") ??
+      new URL(c.req.url).protocol.replace(":", "")
+    ).toLowerCase();
+    const expected = normalizeOrigin(`${proto}://${host}`);
+    if (normalizeOrigin(origin) !== expected)
+      return jsonError(c, 403, "origin_not_allowed", {
+        origin: normalizeOrigin(origin).slice(0, 256),
+      });
+    await next();
+  });
   // Admin routes rely on the /api/* middleware for the origin gate and CORS headers.
   registerAdmin(app, { cfg, repo, history, maintain });
   registerPages(app);

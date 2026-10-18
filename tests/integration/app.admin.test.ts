@@ -81,6 +81,49 @@ describe("admin API", () => {
     expect(after.bans).toHaveLength(0);
   });
 
+  test("管理写操作：跨站 Origin 403，同源放行，缺 Origin 403", async () => {
+    const { app } = await boot({ adminRequireOrigin: true } as never);
+    // 登录本身也是写操作：浏览器会带 Origin，curl 则必须显式提供。
+    const login = await app.request("http://chat.example.com/api/admin/login", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: "http://chat.example.com",
+      },
+      body: JSON.stringify({ secret: "test-secret" }),
+    });
+    expect(login.status).toBe(200);
+    const cookie = (login.headers.get("set-cookie") ?? "").split(";")[0];
+    const ban = (origin?: string) =>
+      app.request("http://chat.example.com/api/admin/bans", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          cookie,
+          ...(origin ? { origin } : {}),
+        },
+        body: JSON.stringify({ ip: "1.2.3.4", reason: "x" }),
+      });
+
+    const evil = await ban("https://evil.example.com");
+    expect(evil.status).toBe(403);
+    expect(((await evil.json()) as any).error.code).toBe("origin_not_allowed");
+
+    // 同源放行：Origin 必须与请求自身的 host/proto 对上。
+    const same = await ban("http://chat.example.com");
+    expect([200, 201]).toContain(same.status);
+
+    const none = await ban();
+    expect(none.status).toBe(403);
+    expect(((await none.json()) as any).error.code).toBe("missing_origin");
+
+    // 读接口不受限：只读监控不该因为不带 Origin 而挂掉。
+    const read = await app.request("http://chat.example.com/api/admin/stats", {
+      headers: { cookie, origin: "https://evil.example.com" },
+    });
+    expect(read.status).toBe(200);
+  });
+
   test("封禁非法 IP → 400（不是默默落库一个坏值）", async () => {
     const { app } = await boot();
     const login = await app.request("/api/admin/login", {
