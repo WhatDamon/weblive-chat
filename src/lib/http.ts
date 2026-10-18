@@ -55,15 +55,38 @@ export function failDb(c: Context<AppEnv>, scope: string, err: unknown) {
   return jsonError(c, 503, "db_unavailable");
 }
 
-export async function readJson(
+export const MAX_BODY_BYTES = 16_384;
+
+export type JsonBodyResult =
+  | { ok: true; body: Record<string, unknown> }
+  | { ok: false; tooLarge: boolean };
+
+/** 先看 content-length，再按字节数兜底：避免把任意大的 body 解析成对象。 */
+export async function readJsonBody(
   c: Context<AppEnv>,
-): Promise<Record<string, unknown> | null> {
+  maxBytes = MAX_BODY_BYTES,
+): Promise<JsonBodyResult> {
   const ct = c.req.header("content-type") ?? "";
-  if (!ct.includes("application/json")) return null;
+  if (!ct.includes("application/json")) return { ok: false, tooLarge: false };
+  const len = Number(c.req.header("content-length") ?? "");
+  if (Number.isFinite(len) && len > maxBytes)
+    return { ok: false, tooLarge: true };
+  let text: string;
   try {
-    return await c.req.json();
+    text = await c.req.text();
   } catch {
-    return null;
+    // 读体失败的语义是「不是合法 JSON」，不是「太大」。
+    return { ok: false, tooLarge: false };
+  }
+  if (new TextEncoder().encode(text).length > maxBytes)
+    return { ok: false, tooLarge: true };
+  try {
+    const v = JSON.parse(text);
+    if (!v || typeof v !== "object" || Array.isArray(v))
+      return { ok: false, tooLarge: false };
+    return { ok: true, body: v as Record<string, unknown> };
+  } catch {
+    return { ok: false, tooLarge: false };
   }
 }
 

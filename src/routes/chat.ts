@@ -10,7 +10,7 @@ import {
   parseIdParam,
   parseSinceParam,
   jsonError,
-  readJson,
+  readJsonBody,
   failDb,
   type AppEnv,
 } from "../lib/http";
@@ -104,8 +104,12 @@ export function registerChat(app: Hono<AppEnv>, d: ChatDeps) {
 
   app.post("/api/messages", async (c) => {
     const ip = ipOf(c);
-    const body = await readJson(c);
-    if (!body) return jsonError(c, 400, "invalid_body");
+    const r = await readJsonBody(c);
+    if (!r.ok)
+      return r.tooLarge
+        ? jsonError(c, 413, "payload_too_large")
+        : jsonError(c, 400, "invalid_body");
+    const body = r.body;
     // Validate first: bad input must not consume rate budget or touch the DB.
     const filter = d.getFilter ? await d.getFilter() : undefined;
     const v = validateMessageBody(filter ? { ...cfg, filter } : cfg, body);

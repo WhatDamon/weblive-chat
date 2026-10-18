@@ -80,6 +80,45 @@ describe("chat 公开端点", () => {
     expect(j.messages.map((m) => m.id)).toEqual(["1", "2"]);
   });
 
+  test("超大请求体 → 413 payload_too_large", async () => {
+    const { app } = await boot();
+    const res = await app.request("/api/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        client_id: UUID,
+        nick: "n",
+        text: "x".repeat(20_000),
+      }),
+    });
+    expect(res.status).toBe(413);
+    expect(((await res.json()) as any).error.code).toBe("payload_too_large");
+  });
+
+  test("分块上传（无 content-length）超限同样 413", async () => {
+    const { app } = await boot();
+    const chunk = new TextEncoder().encode("x".repeat(8_000));
+    let sent = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent >= 3) return controller.close();
+        sent += 1;
+        controller.enqueue(chunk);
+      },
+    });
+    const res = await app.request(
+      new Request("http://x/api/messages", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body,
+        // @ts-expect-error Bun 支持 duplex，标准 RequestInit 类型还没有它
+        duplex: "half",
+      }),
+    );
+    expect(res.status).toBe(413);
+    expect(((await res.json()) as any).error.code).toBe("payload_too_large");
+  });
+
   test("错误信封：400 禁词 / 400 uuid / 429 限流（含 retry_after_ms）", async () => {
     const { app } = await boot({
       rate: {

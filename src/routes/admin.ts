@@ -12,7 +12,7 @@ import { rateCheck } from "../lib/limits";
 import { COPY, fill } from "../lib/copy";
 import {
   jsonError,
-  readJson,
+  readJsonBody,
   parseIdParam,
   failDb,
   type AppEnv,
@@ -79,8 +79,12 @@ export function registerAdmin(app: Hono<AppEnv>, d: AdminDeps) {
     } catch (err) {
       return failDb(c, "admin.login", err);
     }
-    const body = await readJson(c);
-    const given = (body as { secret?: unknown } | null)?.secret;
+    const r = await readJsonBody(c);
+    if (!r.ok)
+      return r.tooLarge
+        ? jsonError(c, 413, "payload_too_large")
+        : jsonError(c, 400, "invalid_body");
+    const given = r.body.secret;
     if (typeof given !== "string" || given.length === 0)
       return jsonError(c, 400, "invalid_body");
     // Comparing the literal is fine: the timing-sensitive path is verifyToken below.
@@ -156,8 +160,12 @@ export function registerAdmin(app: Hono<AppEnv>, d: AdminDeps) {
   });
 
   app.post("/api/admin/bans", guard, async (c) => {
-    const body = await readJson(c);
-    if (!body) return jsonError(c, 400, "invalid_body");
+    const r = await readJsonBody(c);
+    if (!r.ok)
+      return r.tooLarge
+        ? jsonError(c, 413, "payload_too_large")
+        : jsonError(c, 400, "invalid_body");
+    const body = r.body;
     const ip = normalizeIp(body.ip as string);
     const reason =
       typeof body.reason === "string" ? body.reason.trim().slice(0, 200) : "";
@@ -225,8 +233,12 @@ export function registerAdmin(app: Hono<AppEnv>, d: AdminDeps) {
     const ip = ipOf(c);
     const gate = await purgeRateGate(c, ip);
     if (gate) return gate;
-    const body = await readJson(c);
-    const scope = (body as { scope?: unknown } | null)?.scope;
+    const r = await readJsonBody(c);
+    if (!r.ok)
+      return r.tooLarge
+        ? jsonError(c, 413, "payload_too_large")
+        : jsonError(c, 400, "invalid_body");
+    const scope = r.body.scope;
     if (!isPurgeScope(scope))
       return jsonError(c, 400, "invalid_body", {
         message: COPY.route.scopeInvalid,
@@ -258,8 +270,12 @@ export function registerAdmin(app: Hono<AppEnv>, d: AdminDeps) {
     const ip = ipOf(c);
     const gate = await purgeRateGate(c, ip);
     if (gate) return gate;
-    const body = await readJson(c);
-    if (!body) return jsonError(c, 400, "invalid_body");
+    const r = await readJsonBody(c);
+    if (!r.ok)
+      return r.tooLarge
+        ? jsonError(c, 413, "payload_too_large")
+        : jsonError(c, 400, "invalid_body");
+    const body = r.body;
     const scope = body.scope;
     if (!isPurgeScope(scope))
       return jsonError(c, 400, "invalid_body", {

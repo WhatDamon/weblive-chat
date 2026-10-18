@@ -130,6 +130,7 @@
 | 403 | `origin_not_allowed` | Origin 不在名单；响应体附 `origin`（被拒来源）与 `allowed_origins_count` |
 | 403 | `missing_origin` | `REQUIRE_ORIGIN=1` 下请求未带 Origin |
 | 404 | `not_found` | 解封不存在 / 删不存在的消息 |
+| 413 | `payload_too_large` | 请求体超过 16KB（`content-length` 与实际字节数都会检查） |
 | 429 | `rate_limited` | 超限（附 `retry_after_ms`） |
 | 503 | `db_unavailable` | 存储不可用（数据库拒写或连不上，如额度耗尽）；稍后重试 |
 | 500 | — | 未预期服务端错误 |
