@@ -1,11 +1,61 @@
 import { describe, expect, test } from "bun:test";
 import {
   decideHistory,
+  newHistoryState,
   performMaintenance,
   RETENTION_LADDER_DAYS,
 } from "../../src/lib/history";
 
 const cfg = { retentionDays: 90, maxRows: 1000 };
+/** 维护依赖的本地工厂：记录每个被调用的方法名，供顺序断言。 */
+function historyDeps(over: Record<string, any> = {}) {
+  const calls: string[] = [];
+  const repo = {
+    cleanupEvents: async () => {
+      calls.push("cleanupEvents");
+      return 0;
+    },
+    cleanupPresence: async () => {
+      calls.push("cleanupPresence");
+      return 0;
+    },
+    cleanupRateLimits: async () => {
+      calls.push("cleanupRateLimits");
+      return 0;
+    },
+    messageStats: async () => {
+      calls.push("messageStats");
+      return { total: 0, retained: 0 };
+    },
+    deleteMessagesOlderThan: async () => {
+      calls.push("deleteMessagesOlderThan");
+      return 0;
+    },
+    idAtOffset: async () => {
+      calls.push("idAtOffset");
+      return null;
+    },
+    trimMessagesBelow: async () => {
+      calls.push("trimMessagesBelow");
+      return 0;
+    },
+    ...over,
+  };
+  return {
+    calls,
+    deps: {
+      repo: repo as any,
+      cfg: {
+        maxRows: 3,
+        retentionDays: 90,
+        presenceTtlMs: 45_000,
+        eventsTtlMs: 3_600_000,
+        maintenanceEvery: 100,
+      },
+      state: newHistoryState(),
+    },
+  };
+}
 
 describe("decideHistory", () => {
   test("远低于上限 → full 且保留配置天数", () => {
@@ -52,66 +102,43 @@ describe("performMaintenance", () => {
   test("四阶段顺序：清理→档位删超龄→超行数裁剪→重算档位", async () => {
     const T = 1_800_000_000_000; // Fixed now so the cutoff assertion is deterministic
     const DAY = 86_400_000;
-    const order: string[] = [];
     const statsSeq = [5, 5, 2]; // initial → after age-delete (still over cap) → after trim
     let i = 0;
     let dayCutoff = 0;
     let floor = 0;
-    const repo = {
-      cleanupEvents: async () => {
-        order.push("cleanupEvents");
-        return 1;
-      },
-      cleanupPresence: async () => {
-        order.push("cleanupPresence");
-        return 2;
-      },
-      cleanupRateLimits: async () => {
-        order.push("cleanupRateLimits");
-        return 3;
-      },
+    const { calls, deps } = historyDeps({
       messageStats: async () => {
-        order.push("messageStats");
+        calls.push("messageStats");
         const r = statsSeq[Math.min(i, statsSeq.length - 1)];
         i++;
         return { total: r, retained: r };
       },
       deleteMessagesOlderThan: async (cutoff: number) => {
-        order.push("deleteMessagesOlderThan");
+        calls.push("deleteMessagesOlderThan");
         dayCutoff = cutoff;
         return 5;
       },
-      historyBefore: async () => {
-        order.push("historyBefore");
-        return [{ id: 102 }, { id: 101 }, { id: 100 }]; // Contract: id DESC (newest first)
+      idAtOffset: async (offset: number) => {
+        calls.push("idAtOffset");
+        // 第 maxRows 新的 id（maxRows=3、offset=2）就是裁剪边界。
+        expect(offset).toBe(2);
+        return 100;
       },
       trimMessagesBelow: async (f: number) => {
-        order.push("trimMessagesBelow");
+        calls.push("trimMessagesBelow");
         floor = f;
         return 2;
       },
-    };
-    const res = await performMaintenance(
-      {
-        repo: repo as any,
-        cfg: {
-          maxRows: 3,
-          retentionDays: 90,
-          presenceTtlMs: 45_000,
-          eventsTtlMs: 3_600_000,
-          maintenanceEvery: 100,
-        },
-      },
-      T,
-    );
-    expect(order).toEqual([
+    });
+    const res = await performMaintenance(deps, T);
+    expect(calls).toEqual([
       "cleanupEvents",
       "cleanupPresence",
       "cleanupRateLimits",
       "messageStats",
       "deleteMessagesOlderThan",
       "messageStats",
-      "historyBefore",
+      "idAtOffset",
       "trimMessagesBelow",
       "messageStats",
     ]);
@@ -122,5 +149,22 @@ describe("performMaintenance", () => {
       retentionDays: 30,
       deleted: 7,
     });
+  });
+
+  test("触顶裁剪不调用 historyBefore（不再整表读）", async () => {
+    const { deps, calls } = historyDeps({
+      messageStats: async () => ({ total: 5, retained: 5 }),
+      idAtOffset: async () => {
+        calls.push("idAtOffset");
+        return 3;
+      },
+      trimMessagesBelow: async () => {
+        calls.push("trimMessagesBelow");
+        return 2;
+      },
+    });
+    await performMaintenance(deps, 1_000);
+    expect(calls.filter((c) => c === "idAtOffset")).toHaveLength(1);
+    expect(calls).not.toContain("historyBefore");
   });
 });

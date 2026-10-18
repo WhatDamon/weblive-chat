@@ -44,8 +44,8 @@ export interface HistoryDeps {
     cleanupRateLimits(before: number): Promise<number>;
     trimMessagesBelow(idFloor: number): Promise<number>;
     deleteMessagesOlderThan(cutoff: number): Promise<number>;
-    /** Must order id-DESC: performMaintenance uses the last row's id as the trim floor. */
-    historyBefore(before: number, limit: number): Promise<{ id: number }[]>;
+    /** 第 offset 新的消息 id（0 起），越界返回 null：触顶裁剪的边界查询。 */
+    idAtOffset(offset: number): Promise<number | null>;
   };
   cfg: {
     maxRows: number;
@@ -76,9 +76,9 @@ export async function performMaintenance(
   deleted += await repo.deleteMessagesOlderThan(now - days * DAY_MS);
   ({ retained } = await repo.messageStats());
   if (retained >= cfg.maxRows && cfg.maxRows > 0) {
-    const rows = await repo.historyBefore(MAX_ID_BOUND, cfg.maxRows);
-    if (rows.length >= cfg.maxRows) {
-      const floor = rows[rows.length - 1].id;
+    const floor = await repo.idAtOffset(cfg.maxRows - 1);
+    // floor 是第 maxRows 新的 id：删掉更早的，正好留 maxRows 行；null 表示不足 maxRows。
+    if (floor !== null) {
       deleted += await repo.trimMessagesBelow(floor);
       ({ retained } = await repo.messageStats());
     }

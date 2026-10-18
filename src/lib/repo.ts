@@ -60,6 +60,8 @@ export interface Repo {
   eventsSince(since: number, limit: number): Promise<EventRow[]>;
   eventsMaxId(): Promise<number>;
   historyBefore(before: number, limit: number): Promise<MessageRow[]>;
+  /** 第 offset 新的消息 id（0 起，id 倒序），越界返回 null。 */
+  idAtOffset(offset: number): Promise<number | null>;
   historySince(since: number, limit: number): Promise<MessageRow[]>;
   /** 单事务：软删成功才写 delete 事件；返回是否真的删了（重复删 = false，不重复广播）。 */
   softDeleteMessageAndEvent(
@@ -122,6 +124,7 @@ const SQL = {
   eventsSince: "SELECT * FROM events WHERE id > ? ORDER BY id ASC LIMIT ?",
   maxEventId: "SELECT COALESCE(MAX(id), 0) AS m FROM events",
   before: "SELECT * FROM messages WHERE id < ? ORDER BY id DESC LIMIT ?",
+  idAtOffset: "SELECT id FROM messages ORDER BY id DESC LIMIT 1 OFFSET ?",
   since: "SELECT * FROM messages WHERE id > ? ORDER BY id ASC LIMIT ?",
   softDel:
     "UPDATE messages SET deleted_at = ?, deleted_by = ?, text = '' WHERE id = ? AND deleted_at IS NULL",
@@ -304,6 +307,10 @@ class SqliteRepo implements Repo {
   }
   async historyBefore(before: number, limit: number): Promise<MessageRow[]> {
     return (await this.run<any[]>(SQL.before, [before, limit])).map(mapMessage);
+  }
+  async idAtOffset(offset: number): Promise<number | null> {
+    const r = await this.run<{ id: number }[]>(SQL.idAtOffset, [offset]);
+    return r[0] ? Number(r[0].id) : null;
   }
   async historySince(since: number, limit: number): Promise<MessageRow[]> {
     return (await this.run<any[]>(SQL.since, [since, limit])).map(mapMessage);
@@ -578,6 +585,10 @@ class PostgresRepo implements Repo {
   async historyBefore(before: number, limit: number): Promise<MessageRow[]> {
     return (await this.query<any>(SQL.before, [before, limit])).map(mapMessage);
   }
+  async idAtOffset(offset: number): Promise<number | null> {
+    const r = await this.query<{ id: number }>(SQL.idAtOffset, [offset]);
+    return r[0] ? Number(r[0].id) : null;
+  }
   async historySince(since: number, limit: number): Promise<MessageRow[]> {
     return (await this.query<any>(SQL.since, [since, limit])).map(mapMessage);
   }
@@ -776,6 +787,11 @@ class MemoryRepo implements Repo {
   }
   async eventsMaxId(): Promise<number> {
     return this.events.length ? this.events[this.events.length - 1].id : 0;
+  }
+  async idAtOffset(offset: number): Promise<number | null> {
+    const sorted = [...this.messages].sort((a, b) => b.id - a.id);
+    const m = sorted[offset];
+    return m ? m.id : null;
   }
   async historyBefore(before: number, limit: number): Promise<MessageRow[]> {
     return this.messages

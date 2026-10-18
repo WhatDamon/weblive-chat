@@ -15,6 +15,21 @@ function contract(provider: TestProvider) {
       await cleanup();
     });
 
+    test("idAtOffset：按 id 倒序取第 n 个，越界返回 null", async () => {
+      const { repo, cleanup } = await makeRepo(provider);
+      for (let i = 1; i <= 3; i++)
+        await repo.sendMessageAndEvent({
+          client_id: "b1b1b1b1-b1b1-4b1b-8b1b-b1b1b1b1b1b1",
+          nick: "n",
+          text: `t${i}`,
+          created_at: i,
+        });
+      expect(await repo.idAtOffset(0)).toBe(3);
+      expect(await repo.idAtOffset(2)).toBe(1);
+      expect(await repo.idAtOffset(9)).toBeNull();
+      await cleanup();
+    });
+
     test("DDL 幂等：schema_version=1，事件与限流清理索引存在", async () => {
       const { repo, cleanup } = await makeRepo(provider);
       await repo.bootstrap();
