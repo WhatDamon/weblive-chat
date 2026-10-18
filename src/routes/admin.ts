@@ -198,10 +198,9 @@ export function registerAdmin(app: Hono<AppEnv>, d: AdminDeps) {
     if (!id) return jsonError(c, 400, "invalid_cursor");
     const now = Date.now();
     try {
-      const ok = await repo.softDeleteMessage(id, "admin", now);
+      // 删与广播在同一个事务里：事件 payload 只带消息 id，从不带操作者 IP。
+      const ok = await repo.softDeleteMessageAndEvent(id, "admin", now);
       if (!ok) return jsonError(c, 404, "not_found");
-      // Delete event carries only the message id; never the operator IP.
-      await repo.insertEvent("delete", JSON.stringify({ id: String(id) }), now);
       return c.body(null, 204);
     } catch (err) {
       return failDb(c, "admin.messages.delete", err);

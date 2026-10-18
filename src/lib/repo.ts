@@ -59,7 +59,12 @@ export interface Repo {
   eventsMaxId(): Promise<number>;
   historyBefore(before: number, limit: number): Promise<MessageRow[]>;
   historySince(since: number, limit: number): Promise<MessageRow[]>;
-  softDeleteMessage(id: number, by: string, at: number): Promise<boolean>;
+  /** 单事务：软删成功才写 delete 事件；返回是否真的删了（重复删 = false，不重复广播）。 */
+  softDeleteMessageAndEvent(
+    id: number,
+    by: string,
+    at: number,
+  ): Promise<boolean>;
   banUpsert(
     ip: string,
     reason: string,
@@ -289,13 +294,29 @@ class SqliteRepo implements Repo {
   async historySince(since: number, limit: number): Promise<MessageRow[]> {
     return (await this.run<any[]>(SQL.since, [since, limit])).map(mapMessage);
   }
-  async softDeleteMessage(
+  async softDeleteMessageAndEvent(
     id: number,
     by: string,
     at: number,
   ): Promise<boolean> {
-    const r = await this.c.execute({ sql: SQL.softDel, args: [at, by, id] });
-    return Number(r.rowsAffected) > 0;
+    // 删与广播必须同生共死：分两次写会出现「删了但客户端仍看到」或反过来的脏窗口。
+    const tx = await this.c.transaction("write");
+    try {
+      const r = await tx.execute({ sql: SQL.softDel, args: [at, by, id] });
+      if (Number(r.rowsAffected) === 0) {
+        await tx.rollback();
+        return false;
+      }
+      await tx.execute({
+        sql: SQL.insEvent,
+        args: ["delete", JSON.stringify({ id: String(id) }), at],
+      });
+      await tx.commit();
+      return true;
+    } catch (err) {
+      await tx.rollback().catch(() => {});
+      throw err;
+    }
   }
   /** Upsert rowsAffected is always 1 here, so existence is checked inside a write tx (atomic). */
   async banUpsert(
@@ -534,12 +555,23 @@ class PostgresRepo implements Repo {
   async historySince(since: number, limit: number): Promise<MessageRow[]> {
     return (await this.query<any>(SQL.since, [since, limit])).map(mapMessage);
   }
-  async softDeleteMessage(
+  async softDeleteMessageAndEvent(
     id: number,
     by: string,
     at: number,
   ): Promise<boolean> {
-    return (await this.countAffected(SQL.softDel, [at, by, id])) > 0;
+    return await this.sql.begin(async (tx) => {
+      const del = this.toPgParams(SQL.softDel, [at, by, id]);
+      const r = await tx.unsafe(del.sql, del.args);
+      if (!r.count) return false;
+      const ins = this.toPgParams(SQL.insEvent, [
+        "delete",
+        JSON.stringify({ id: String(id) }),
+        at,
+      ]);
+      await tx.unsafe(ins.sql, ins.args);
+      return true;
+    });
   }
   async banUpsert(
     ip: string,
@@ -726,7 +758,7 @@ class MemoryRepo implements Repo {
       .slice(0, limit)
       .map(mapMessage);
   }
-  async softDeleteMessage(
+  async softDeleteMessageAndEvent(
     id: number,
     by: string,
     at: number,
@@ -736,6 +768,7 @@ class MemoryRepo implements Repo {
     row.deleted_at = at;
     row.deleted_by = by;
     row.text = ""; // same as sqlite: mapMessage derives null from deleted_at
+    await this.insertEvent("delete", JSON.stringify({ id: String(id) }), at);
     return true;
   }
   async banUpsert(

@@ -56,19 +56,27 @@ function contract(provider: TestProvider) {
       expect(before.map((m) => m.text)).toEqual(["m1", "m0"]); // older than id2, descending
       const since = await repo.historySince(sent[0].messageId, 10);
       expect(since.map((m) => m.text)).toEqual(["m1", "m2"]);
-      const ok = await repo.softDeleteMessage(
+      const ok = await repo.softDeleteMessageAndEvent(
         sent[1].messageId,
         "admin",
         now + 100,
       );
       expect(ok).toBe(true);
       // second soft delete matches no row (deleted_at already set)
-      const okAgain = await repo.softDeleteMessage(
+      const okAgain = await repo.softDeleteMessageAndEvent(
         sent[1].messageId,
         "admin",
         now + 200,
       );
       expect(okAgain).toBe(false);
+      // 只有真正删掉的那次才广播 delete 事件
+      const dels = (await repo.eventsSince(0, 50)).filter(
+        (e) => e.type === "delete",
+      );
+      expect(dels).toHaveLength(1);
+      expect(JSON.parse(dels[0].payload)).toEqual({
+        id: String(sent[1].messageId),
+      });
       const all = await repo.historyBefore(PG_SAFE_MAX_ID, 10);
       expect(all.find((m) => m.id === sent[1].messageId)).toMatchObject({
         text: null,
