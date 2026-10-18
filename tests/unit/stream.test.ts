@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { runStream } from "../../src/lib/stream";
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -236,5 +236,36 @@ describe("runStream", () => {
     expect(
       out.some((o) => o[0] === "message" && (o[1] as any).id === "1"),
     ).toBe(true);
+  });
+
+  test("DB 异常：只下发 code，不下发原始错误；并记录日志", async () => {
+    const lines: string[] = [];
+    const spy = spyOn(console, "error").mockImplementation((s) => {
+      lines.push(String(s));
+    });
+    const errs: Array<[string, unknown]> = [];
+    const repo = {
+      eventsSince: async () => {
+        throw new Error("postgres://user:pw@host/db refused");
+      },
+      eventsMaxId: async () => 0,
+      presenceUpsert: async () => {},
+      presenceCount: async () => 0,
+      banGet: async () => null,
+    };
+    runStream({
+      repo: repo as never,
+      clientId: "c1",
+      since: 0,
+      cfg: { ...cfg, pollMs: 1, eventProbeMs: 0 },
+      emit: (t, d) => errs.push([t, d]),
+    });
+    await sleep(30);
+    const [type, data] = errs.find(([t]) => t === "error")!;
+    expect(type).toBe("error");
+    expect(data).toEqual({ code: "db_unavailable" });
+    expect(JSON.stringify(data)).not.toContain("postgres://");
+    expect(lines.some((l) => JSON.parse(l).scope === "stream")).toBe(true);
+    spy.mockRestore();
   });
 });

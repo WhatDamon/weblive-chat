@@ -1,4 +1,5 @@
 import type { EventRow } from "./repo";
+import { logError } from "./log";
 
 export interface StreamRepo {
   eventsSince(since: number, limit: number): Promise<EventRow[]>;
@@ -122,7 +123,9 @@ export function runStream(o: StreamOpts): { stop: () => void } {
       await sleep(Math.max(wait - elapsed, 0)); // keep ticks aligned
     }
   })().catch((err) => {
-    o.emit("error", { code: "db_unavailable", message: String(err) });
+    // 内部错误只进日志：SSE 帧对任意浏览器可见，不能带出 SQL/连接串。
+    logError("stream", err, { client_id: o.clientId, since });
+    o.emit("error", { code: "db_unavailable" });
     stopped = true;
   });
 
