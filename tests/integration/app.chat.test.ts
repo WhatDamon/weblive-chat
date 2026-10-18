@@ -383,9 +383,10 @@ describe("chat 公开端点", () => {
     const evs = await repo.eventsSince(0, 100);
     expect(evs.some((e) => e.type === "notice")).toBe(true); // history_mode notice
     const msgEvs = evs.filter((e) => e.type === "message");
-    expect(
-      JSON.parse(msgEvs[msgEvs.length - 1].payload).id.startsWith("e"),
-    ).toBe(true);
+    // e + uuid：ephemeral id 不进 messages.id 的数字命名空间。
+    expect(JSON.parse(msgEvs[msgEvs.length - 1].payload).id).toMatch(
+      /^e[0-9a-f-]{36}$/,
+    );
   });
 
   test("DB 故障：GET /api/messages → 503 db_unavailable 信封（非 500）", async () => {

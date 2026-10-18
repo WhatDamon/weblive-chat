@@ -154,6 +154,6 @@ describe("memory 驱动 app 契约", () => {
     expect(evs.some((e) => e.type === "notice")).toBe(true);
     const last = evs[evs.length - 1];
     expect(last.type).toBe("message");
-    expect(JSON.parse(last.payload).id.startsWith("e")).toBe(true);
+    expect(JSON.parse(last.payload).id).toMatch(/^e[0-9a-f-]{36}$/);
   });
 });

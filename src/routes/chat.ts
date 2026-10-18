@@ -142,12 +142,9 @@ export function registerChat(app: Hono<AppEnv>, d: ChatDeps) {
       };
       if (d.history.mode === "ephemeral") {
         // Ephemeral mode writes only events; the "e" prefix avoids the messages.id space.
-        const { eventId } = await repo.publishEphemeralMessage(msg);
+        const { messageId } = await repo.publishEphemeralMessage(msg);
         await d.maintain?.();
-        return c.json(
-          { id: `e${eventId}`, created_at: iso(msg.created_at) },
-          201,
-        );
+        return c.json({ id: messageId, created_at: iso(msg.created_at) }, 201);
       }
       const { messageId } = await repo.sendMessageAndEvent(msg);
       await d.maintain?.();

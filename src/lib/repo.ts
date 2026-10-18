@@ -50,8 +50,8 @@ export interface Repo {
   sendMessageAndEvent(
     m: MessageInput,
   ): Promise<{ messageId: number; eventId: number }>;
-  /** Live-only broadcast: events only, id "e<id>" avoids the messages.id namespace. */
-  publishEphemeralMessage(m: MessageInput): Promise<{ eventId: number }>;
+  /** Live-only broadcast: one INSERT, id "e<uuid>" avoids the messages.id namespace. */
+  publishEphemeralMessage(m: MessageInput): Promise<{ messageId: string }>;
   insertEvent(
     type: string,
     payload: string,
@@ -120,7 +120,6 @@ const SQL = {
   insMessage:
     "INSERT INTO messages (client_id, nick, text, created_at) VALUES (?, ?, ?, ?)",
   insEvent: "INSERT INTO events (type, payload, created_at) VALUES (?, ?, ?)",
-  updEventPayload: "UPDATE events SET payload = ? WHERE id = ?",
   eventsSince: "SELECT * FROM events WHERE id > ? ORDER BY id ASC LIMIT ?",
   maxEventId: "SELECT COALESCE(MAX(id), 0) AS m FROM events",
   before: "SELECT * FROM messages WHERE id < ? ORDER BY id DESC LIMIT ?",
@@ -262,28 +261,20 @@ class SqliteRepo implements Repo {
     }
   }
 
-  async publishEphemeralMessage(m: MessageInput): Promise<{ eventId: number }> {
-    const tx = await this.c.transaction("write");
-    try {
-      const ev = await tx.execute({
-        sql: SQL.insEvent,
-        args: ["message", "", m.created_at],
-      });
-      const eventId = Number(ev.lastInsertRowid);
-      const payload = JSON.stringify({
-        id: `e${eventId}`,
-        client_id: m.client_id,
-        nick: m.nick,
-        text: m.text,
-        created_at: m.created_at,
-      });
-      await tx.execute({ sql: SQL.updEventPayload, args: [payload, eventId] });
-      await tx.commit();
-      return { eventId };
-    } catch (err) {
-      await tx.rollback().catch(() => {});
-      throw err;
-    }
+  async publishEphemeralMessage(
+    m: MessageInput,
+  ): Promise<{ messageId: string }> {
+    // 先插占位再 UPDATE 的写法要两次写 + 一个事务；id 直接由进程生成就只需一次。
+    const id = `e${crypto.randomUUID()}`;
+    const payload = JSON.stringify({
+      id,
+      client_id: m.client_id,
+      nick: m.nick,
+      text: m.text,
+      created_at: m.created_at,
+    });
+    await this.insertEvent("message", payload, m.created_at);
+    return { messageId: id };
   }
   async insertEvent(
     type: string,
@@ -540,26 +531,19 @@ class PostgresRepo implements Repo {
     });
   }
 
-  async publishEphemeralMessage(m: MessageInput): Promise<{ eventId: number }> {
-    return await this.sql.begin(async (tx) => {
-      const insEv = this.toPgParams(SQL.insEvent + " RETURNING id", [
-        "message",
-        "",
-        m.created_at,
-      ]);
-      const [ev] = await tx.unsafe(insEv.sql, insEv.args);
-      const eventId = Number(ev.id);
-      const payload = JSON.stringify({
-        id: `e${eventId}`,
-        client_id: m.client_id,
-        nick: m.nick,
-        text: m.text,
-        created_at: m.created_at,
-      });
-      const upd = this.toPgParams(SQL.updEventPayload, [payload, eventId]);
-      await tx.unsafe(upd.sql, upd.args);
-      return { eventId };
+  async publishEphemeralMessage(
+    m: MessageInput,
+  ): Promise<{ messageId: string }> {
+    const id = `e${crypto.randomUUID()}`;
+    const payload = JSON.stringify({
+      id,
+      client_id: m.client_id,
+      nick: m.nick,
+      text: m.text,
+      created_at: m.created_at,
     });
+    await this.insertEvent("message", payload, m.created_at);
+    return { messageId: id };
   }
   async insertEvent(
     type: string,
@@ -752,23 +736,20 @@ class MemoryRepo implements Repo {
     return { messageId, eventId };
   }
 
-  async publishEphemeralMessage(m: MessageInput): Promise<{ eventId: number }> {
-    const eventId = ++this.evSeq;
-    this.events.push({
-      id: eventId,
-      type: "message",
-      payload: JSON.stringify({
-        id: `e${eventId}`,
-        client_id: m.client_id,
-        nick: m.nick,
-        text: m.text,
-        created_at: m.created_at,
-      }),
+  async publishEphemeralMessage(
+    m: MessageInput,
+  ): Promise<{ messageId: string }> {
+    const id = `e${crypto.randomUUID()}`;
+    const payload = JSON.stringify({
+      id,
+      client_id: m.client_id,
+      nick: m.nick,
+      text: m.text,
       created_at: m.created_at,
     });
-    return { eventId };
+    await this.insertEvent("message", payload, m.created_at);
+    return { messageId: id };
   }
-
   async insertEvent(
     type: string,
     payload: string,

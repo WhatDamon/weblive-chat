@@ -149,23 +149,24 @@ function contract(provider: TestProvider) {
       await cleanup();
     });
 
-    test("publishEphemeralMessage 只写 events：payload id=e<id>，messages 不增", async () => {
+    test("publishEphemeralMessage：一次写入，payload.id 即返回 id，messages 不增", async () => {
       const { repo, cleanup } = await makeRepo(provider);
       const statsBefore = await repo.messageStats();
       const now = Date.now();
-      const { eventId } = await repo.publishEphemeralMessage({
+      const { messageId } = await repo.publishEphemeralMessage({
         client_id: "e1e1e1e1-e1e1-4e1e-8e1e-e1e1e1e1e1e1",
         nick: "乙",
         text: "live-only",
         created_at: now,
       });
-      expect(eventId).toBeGreaterThan(0);
+      // e + uuid：既不撞 messages.id 的数字命名空间，也不必先插后改。
+      expect(messageId).toMatch(/^e[0-9a-f-]{36}$/);
       const evs = await repo.eventsSince(0, 10);
       expect(evs).toHaveLength(1);
       expect(evs[0].type).toBe("message");
       expect(evs[0].created_at).toBe(now); // both drivers normalize created_at to a number
       const pl = JSON.parse(evs[0].payload);
-      expect(pl.id).toBe(`e${eventId}`); // e-prefix keeps out of the messages.id namespace
+      expect(pl.id).toBe(messageId);
       expect(pl.text).toBe("live-only");
       expect((await repo.messageStats()).total).toBe(statsBefore.total);
       await cleanup();
