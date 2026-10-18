@@ -4,6 +4,14 @@ import { join } from "node:path";
 
 export type Provider = "sqlite" | "postgres" | "memory";
 
+/** 文档/示例里出现过的口令：生产环境直接拒绝，避免「照抄上线」。 */
+const PLACEHOLDER_SECRETS = new Set([
+  "replace-with-a-long-random-string",
+  "changeme",
+  "secret",
+]);
+const MIN_SECRET_LEN = 16;
+
 export interface RateCfg {
   msgPerMin: number;
   streamPerMin: number;
@@ -83,8 +91,17 @@ export function loadConfig(
       "DB_PROVIDER=memory cannot run in production/Vercel (no persistence, no shared memory); use sqlite(Turso) or postgres",
     );
   const adminSecret = env.ADMIN_SECRET ?? "";
-  if (envName === "production" && !adminSecret)
-    throw new Error("ADMIN_SECRET is required in production");
+  if (envName === "production") {
+    if (!adminSecret) throw new Error("ADMIN_SECRET is required in production");
+    // 文档里出现过的示例值：复制粘贴上线等于没有口令。
+    if (
+      PLACEHOLDER_SECRETS.has(adminSecret) ||
+      adminSecret.length < MIN_SECRET_LEN
+    )
+      throw new Error(
+        `ADMIN_SECRET must be a random string of at least ${MIN_SECRET_LEN} chars (placeholder values are rejected)`,
+      );
+  }
   // "*" means open mode: taken literally it would lock out every origin-bearing request.
   const rawOrigins = parseOriginList(env.ALLOWED_ORIGINS);
   const allowedOrigins = rawOrigins.includes("*") ? [] : rawOrigins;

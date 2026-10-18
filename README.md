@@ -55,7 +55,7 @@ turso db tokens create weblive-chat   # → TURSO_AUTH_TOKEN
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `ADMIN_SECRET` | 仅本地有内置值 | 管理口令；生产缺失即拒绝启动 |
+| `ADMIN_SECRET` | 仅本地有内置值 | 管理口令；生产缺失、短于 16 位或使用示例值（如 `replace-with-a-long-random-string`）都拒绝启动 |
 | `DB_PROVIDER` | `sqlite` | `sqlite` ｜ `postgres` ｜ `memory`（仅本地） |
 | `DATABASE_URL` | `file:./data/dev.db` | `file:` ｜ `libsql://` ｜ `postgres://` |
 | `TURSO_AUTH_TOKEN` | 空 | 仅 Turso（`libsql://`）需要 |

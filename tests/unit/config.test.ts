@@ -119,6 +119,19 @@ describe("loadConfig", () => {
     expect(loadConfig({ ...base }).rate.historyPerMin).toBe(60);
   });
 
+  test("生产口令：占位值/过短拒绝启动", () => {
+    const p = { NODE_ENV: "production", DB_PROVIDER: "sqlite" };
+    expect(() =>
+      loadConfig({ ...p, ADMIN_SECRET: "replace-with-a-long-random-string" }),
+    ).toThrow(/ADMIN_SECRET/);
+    expect(() => loadConfig({ ...p, ADMIN_SECRET: "short" })).toThrow(
+      /ADMIN_SECRET/,
+    );
+    expect(() =>
+      loadConfig({ ...p, ADMIN_SECRET: "x".repeat(16) }),
+    ).not.toThrow();
+  });
+
   test("BANNED_WORDS_DIR 空串/空白回落到 cwd/data/banned", () => {
     const def = join(process.cwd(), "data/banned");
     expect(loadConfig({ ...base, BANNED_WORDS_DIR: "" }).bannedWordsDir).toBe(
