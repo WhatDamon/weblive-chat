@@ -8,6 +8,7 @@ import { registerChat } from "./routes/chat";
 import { registerHealth } from "./routes/health";
 import { registerAdmin } from "./routes/admin";
 import { registerPages } from "./routes/pages";
+import { historyNoticePayload } from "./lib/events";
 import { newHistoryState, performMaintenance } from "./lib/history";
 import { createMaintenance, type Maintenance } from "./lib/maintenance";
 import {
@@ -155,11 +156,9 @@ export function createAppWithHandle(deps: AppDeps): AppHandle {
             await repo
               .insertEvent(
                 "notice",
-                JSON.stringify({
-                  kind: "history_mode",
-                  mode: res.mode,
-                  retention_days: res.retentionDays,
-                }),
+                JSON.stringify(
+                  historyNoticePayload(res.mode, res.retentionDays),
+                ),
                 now,
               )
               .catch(() => {});

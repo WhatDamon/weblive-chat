@@ -3,6 +3,11 @@ import postgres from "postgres";
 import type { AppConfig, Provider } from "./config";
 import { ddlFor } from "./ddl";
 import {
+  deleteEventPayload,
+  ephemeralMessageId,
+  messageEventPayload,
+} from "./events";
+import {
   PURGE_ALL_TABLES,
   PURGE_TABLES,
   type PurgeCounts,
@@ -241,13 +246,7 @@ class SqliteRepo implements Repo {
         args: [m.client_id, m.nick, m.text, m.created_at],
       });
       const messageId = Number(ins.lastInsertRowid);
-      const payload = JSON.stringify({
-        id: String(messageId),
-        client_id: m.client_id,
-        nick: m.nick,
-        text: m.text,
-        created_at: m.created_at,
-      });
+      const payload = JSON.stringify(messageEventPayload(m, messageId));
       const ev = await tx.execute({
         sql: SQL.insEvent,
         args: ["message", payload, m.created_at],
@@ -265,14 +264,8 @@ class SqliteRepo implements Repo {
     m: MessageInput,
   ): Promise<{ messageId: string }> {
     // 先插占位再 UPDATE 的写法要两次写 + 一个事务；id 直接由进程生成就只需一次。
-    const id = `e${crypto.randomUUID()}`;
-    const payload = JSON.stringify({
-      id,
-      client_id: m.client_id,
-      nick: m.nick,
-      text: m.text,
-      created_at: m.created_at,
-    });
+    const id = ephemeralMessageId();
+    const payload = JSON.stringify(messageEventPayload(m, id));
     await this.insertEvent("message", payload, m.created_at);
     return { messageId: id };
   }
@@ -321,7 +314,7 @@ class SqliteRepo implements Repo {
       }
       await tx.execute({
         sql: SQL.insEvent,
-        args: ["delete", JSON.stringify({ id: String(id) }), at],
+        args: ["delete", JSON.stringify(deleteEventPayload(id)), at],
       });
       await tx.commit();
       return true;
@@ -514,13 +507,7 @@ class PostgresRepo implements Repo {
       ]);
       const [msg] = await tx.unsafe(insMsg.sql, insMsg.args);
       const messageId = Number(msg.id);
-      const payload = JSON.stringify({
-        id: String(messageId),
-        client_id: m.client_id,
-        nick: m.nick,
-        text: m.text,
-        created_at: m.created_at,
-      });
+      const payload = JSON.stringify(messageEventPayload(m, messageId));
       const insEv = this.toPgParams(SQL.insEvent + " RETURNING id", [
         "message",
         payload,
@@ -534,14 +521,8 @@ class PostgresRepo implements Repo {
   async publishEphemeralMessage(
     m: MessageInput,
   ): Promise<{ messageId: string }> {
-    const id = `e${crypto.randomUUID()}`;
-    const payload = JSON.stringify({
-      id,
-      client_id: m.client_id,
-      nick: m.nick,
-      text: m.text,
-      created_at: m.created_at,
-    });
+    const id = ephemeralMessageId();
+    const payload = JSON.stringify(messageEventPayload(m, id));
     await this.insertEvent("message", payload, m.created_at);
     return { messageId: id };
   }
@@ -587,7 +568,7 @@ class PostgresRepo implements Repo {
       if (!r.count) return false;
       const ins = this.toPgParams(SQL.insEvent, [
         "delete",
-        JSON.stringify({ id: String(id) }),
+        JSON.stringify(deleteEventPayload(id)),
         at,
       ]);
       await tx.unsafe(ins.sql, ins.args);
@@ -724,13 +705,7 @@ class MemoryRepo implements Repo {
     this.events.push({
       id: eventId,
       type: "message",
-      payload: JSON.stringify({
-        id: String(messageId),
-        client_id: m.client_id,
-        nick: m.nick,
-        text: m.text,
-        created_at: m.created_at,
-      }),
+      payload: JSON.stringify(messageEventPayload(m, messageId)),
       created_at: m.created_at,
     });
     return { messageId, eventId };
@@ -739,14 +714,8 @@ class MemoryRepo implements Repo {
   async publishEphemeralMessage(
     m: MessageInput,
   ): Promise<{ messageId: string }> {
-    const id = `e${crypto.randomUUID()}`;
-    const payload = JSON.stringify({
-      id,
-      client_id: m.client_id,
-      nick: m.nick,
-      text: m.text,
-      created_at: m.created_at,
-    });
+    const id = ephemeralMessageId();
+    const payload = JSON.stringify(messageEventPayload(m, id));
     await this.insertEvent("message", payload, m.created_at);
     return { messageId: id };
   }
@@ -798,7 +767,11 @@ class MemoryRepo implements Repo {
     row.deleted_at = at;
     row.deleted_by = by;
     row.text = ""; // same as sqlite: mapMessage derives null from deleted_at
-    await this.insertEvent("delete", JSON.stringify({ id: String(id) }), at);
+    await this.insertEvent(
+      "delete",
+      JSON.stringify(deleteEventPayload(id)),
+      at,
+    );
     return true;
   }
   async banUpsert(
