@@ -119,6 +119,31 @@ describe("chat 公开端点", () => {
     expect(((await res.json()) as any).error.code).toBe("payload_too_large");
   });
 
+  test("分块超限在读取途中即中止，不把整个 body 读进内存", async () => {
+    const { app } = await boot();
+    let pulls = 0;
+    const chunk = new TextEncoder().encode("x".repeat(8_000));
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (pulls >= 200) return controller.close();
+        pulls += 1;
+        controller.enqueue(chunk);
+      },
+    });
+    const res = await app.request(
+      new Request("http://x/api/messages", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body,
+        // @ts-expect-error Bun 支持 duplex，标准 RequestInit 类型还没有它
+        duplex: "half",
+      }),
+    );
+    expect(res.status).toBe(413);
+    // 16KB 上限 → 最多读 3 块（8KB × 3），而不是把 1.6MB 全读完。
+    expect(pulls).toBeLessThan(20);
+  });
+
   test("错误信封：400 禁词 / 400 uuid / 429 限流（含 retry_after_ms）", async () => {
     const { app } = await boot({
       rate: {

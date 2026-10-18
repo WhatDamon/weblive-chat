@@ -53,4 +53,18 @@ describe("log", () => {
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
     );
   });
+
+  test("日志永不抛异常：不可序列化的字段降级而不是炸掉请求", () => {
+    const lines: string[] = [];
+    const spy = spyOn(console, "error").mockImplementation((s) => {
+      lines.push(String(s));
+    });
+    expect(() =>
+      // PG 的 bigint 场景：运行时真的可能塞进来一个大整数。
+      logError("x", new Error("boom"), { big: 1n as unknown as number }),
+    ).not.toThrow();
+    expect(lines).toHaveLength(1);
+    expect(() => JSON.parse(lines[0])).not.toThrow();
+    spy.mockRestore();
+  });
 });

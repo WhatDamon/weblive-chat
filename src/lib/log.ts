@@ -29,5 +29,17 @@ export function logInfo(event: string, fields: LogFields = {}): void {
 function emit(base: Record<string, unknown>, fields: LogFields): void {
   const line: Record<string, unknown> = { ...base, at: Date.now() };
   for (const [k, v] of Object.entries(fields)) if (v !== undefined) line[k] = v;
-  console.error(JSON.stringify(line));
+  // 日志永远不能成为新的故障源：字段里混进 BigInt/循环引用时降级成最小可用行。
+  let text: string;
+  try {
+    text = JSON.stringify(line);
+  } catch {
+    text = JSON.stringify({
+      level: base.level ?? "info",
+      scope: base.scope ?? base.event ?? "log",
+      msg: "log_fields_unserializable",
+      at: Date.now(),
+    });
+  }
+  console.error(text);
 }
