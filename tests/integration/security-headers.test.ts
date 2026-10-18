@@ -34,6 +34,17 @@ describe("安全响应头", () => {
     expect(csp).not.toContain("unsafe-inline");
   });
 
+  test("页面不含内联 style 属性（CSP 会丢弃它，样式必须写在 <style> 里）", async () => {
+    const { app } = await boot();
+    for (const path of ["/demo.html", "/admin.html"]) {
+      const html = await (
+        await app.fetch(new Request(`http://x${path}`))
+      ).text();
+      // style-src 没有 unsafe-inline：静态 style="..." 会被浏览器忽略，等于样式静默失效。
+      expect(html).not.toMatch(/\sstyle="/);
+    }
+  });
+
   test("页面渲染只读盘一次", async () => {
     const { app } = await boot();
     clearPageCache();
