@@ -27,6 +27,9 @@ export interface StreamOpts {
   since?: number;
   emit: (type: string, data: unknown) => void;
   emitComment?: (text: string) => void;
+  /** 注入时钟与休眠：单测可以把「静默 30 秒」压成微任务，时序断言才稳定。 */
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -37,11 +40,14 @@ const POLL_LIMIT = 100;
 const MAX_DRAIN_ROUNDS = 5;
 
 export function runStream(o: StreamOpts): { stop: () => void } {
+  const now = o.now ?? Date.now;
+  const sleep =
+    o.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   let stopped = false;
   let since = o.since ?? 0;
   let lastOnline: number | null = null;
-  let lastSent = Date.now();
-  let lastEventAt = Date.now();
+  let lastSent = now();
+  let lastEventAt = now();
   let lastProbe = 0;
   let lastUpsert = 0;
   let lastCount = 0;
@@ -59,10 +65,10 @@ export function runStream(o: StreamOpts): { stop: () => void } {
         rows.length === 0 &&
         !probed &&
         since > 0 &&
-        Date.now() - lastProbe >= o.cfg.eventProbeMs
+        now() - lastProbe >= o.cfg.eventProbeMs
       ) {
         probed = true;
-        lastProbe = Date.now();
+        lastProbe = now();
         const maxId = await o.repo.eventsMaxId();
         if (since > maxId) since = Math.max(maxId, 0);
         rows = await o.repo.eventsSince(since, POLL_LIMIT);
@@ -83,26 +89,26 @@ export function runStream(o: StreamOpts): { stop: () => void } {
     }
     // lastSent only advances on real writes, so an idle stream still reaches the heartbeat.
     if (pushed > 0) {
-      lastSent = Date.now();
+      lastSent = now();
       lastEventAt = lastSent;
     }
   };
   // Rate-gate presence writes and counts: at 1s ticks they would blow the DB write budget.
   const tickUpsert = async () => {
-    const now = Date.now();
-    if (now - lastUpsert < o.cfg.presenceUpsertMs) return;
-    lastUpsert = now;
-    await o.repo.presenceUpsert(o.clientId, now);
+    const at = now();
+    if (at - lastUpsert < o.cfg.presenceUpsertMs) return;
+    lastUpsert = at;
+    await o.repo.presenceUpsert(o.clientId, at);
   };
   const tickCount = async () => {
-    const now = Date.now();
-    if (now - lastCount < o.cfg.presenceCountMs) return;
-    lastCount = now;
-    const online = await o.repo.presenceCount(now - o.cfg.presenceTtlMs);
+    const at = now();
+    if (at - lastCount < o.cfg.presenceCountMs) return;
+    lastCount = at;
+    const online = await o.repo.presenceCount(at - o.cfg.presenceTtlMs);
     if (online !== lastOnline) {
       lastOnline = online;
       o.emit("presence", { online });
-      lastSent = Date.now();
+      lastSent = now();
     }
   };
 
@@ -111,27 +117,27 @@ export function runStream(o: StreamOpts): { stop: () => void } {
       const ban = await o.repo.banGet(o.cfg.ip);
       if (ban) {
         o.emit("ban", { reason: ban.reason }); // mute-only: keep the stream open
-        lastSent = Date.now();
+        lastSent = now();
       }
     }
     await tickUpsert();
     await tickCount();
-    lastUpsert = Date.now();
+    lastUpsert = now();
     lastCount = lastUpsert;
     while (!stopped) {
-      const cycleStart = Date.now();
+      const cycleStart = now();
       await tickPoll();
       if (stopped) break;
       await tickUpsert();
-      if (Date.now() - lastSent >= o.cfg.heartbeatMs) {
+      if (now() - lastSent >= o.cfg.heartbeatMs) {
         emitComment("ping");
-        lastSent = Date.now();
+        lastSent = now();
       }
       await tickCount();
-      const elapsed = Date.now() - cycleStart;
+      const elapsed = now() - cycleStart;
       // Quiet streams back off: fewer wakeups, fewer queries, and no held-open instance does realtime
       // work when nobody is talking. An event resets the cadence to pollMs.
-      const quiet = Date.now() - lastEventAt >= o.cfg.idleAfterMs;
+      const quiet = now() - lastEventAt >= o.cfg.idleAfterMs;
       const wait = quiet ? o.cfg.idlePollMs : o.cfg.pollMs;
       await sleep(Math.max(wait - elapsed, 0)); // keep ticks aligned
     }

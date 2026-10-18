@@ -354,3 +354,47 @@ describe("流·单 tick 排空", () => {
     expect(seen).toHaveLength(250);
   });
 });
+
+describe("流·注入时钟", () => {
+  test("空闲超过 idleAfterMs 后改用 idlePollMs（注入 now/sleep）", async () => {
+    let t = 1_000_000;
+    const sleeps: number[] = [];
+    const repo = {
+      eventsSince: async () => [],
+      eventsMaxId: async () => 0,
+      presenceUpsert: async () => {},
+      presenceCount: async () => 1,
+      banGet: async () => null,
+    };
+    const ctrl = runStream({
+      repo: repo as any,
+      clientId: "c",
+      since: 0,
+      cfg: {
+        ...cfg,
+        pollMs: 100,
+        idlePollMs: 3000,
+        idleAfterMs: 1000,
+        eventProbeMs: 0,
+        heartbeatMs: 999_999,
+        presenceUpsertMs: 999_999,
+        presenceCountMs: 999_999,
+      },
+      emit: () => {},
+      now: () => t,
+      // 必须让出一次宏任务：若立即 resolve，整个流循环会变成微任务忙循环，
+      // 测试自己的 setTimeout 永远排不上，整个用例挂死。
+      sleep: async (ms: number) => {
+        sleeps.push(ms);
+        t += ms;
+        await new Promise<void>((r) => setTimeout(r, 0));
+      },
+    });
+    // 注入的 sleep 立即返回，用真实时间只等「微任务跑够轮数」。
+    await new Promise((r) => setTimeout(r, 20));
+    ctrl.stop();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(sleeps[0]).toBe(100); // 有事件节奏：pollMs
+    expect(sleeps[sleeps.length - 1]).toBe(3000); // 静默超阈值：idlePollMs
+  });
+});
