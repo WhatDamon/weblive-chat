@@ -6,6 +6,7 @@ import {
   signToken,
   verifyToken,
   clientIpFromHeaders,
+  constantTimeEqual,
   normalizeIp,
 } from "../lib/security";
 import { rateCheck } from "../lib/limits";
@@ -87,8 +88,9 @@ export function registerAdmin(app: Hono<AppEnv>, d: AdminDeps) {
     const given = r.body.secret;
     if (typeof given !== "string" || given.length === 0)
       return jsonError(c, 400, "invalid_body");
-    // Comparing the literal is fine: the timing-sensitive path is verifyToken below.
-    if (given !== cfg.adminSecret) return jsonError(c, 401, "invalid_secret");
+    // 口令比较必须恒定时间：!== 在第一个不同字节就返回，会泄露前缀匹配长度。
+    if (!constantTimeEqual(given, cfg.adminSecret))
+      return jsonError(c, 401, "invalid_secret");
     const exp = Date.now() + cfg.sessionDays * 86_400_000;
     const token = signToken({ sub: "admin", exp }, cfg.adminSecret);
     c.header("set-cookie", cookieHeader(cfg, token, cfg.sessionDays * 86_400));
@@ -166,7 +168,7 @@ export function registerAdmin(app: Hono<AppEnv>, d: AdminDeps) {
         ? jsonError(c, 413, "payload_too_large")
         : jsonError(c, 400, "invalid_body");
     const body = r.body;
-    const ip = normalizeIp(body.ip as string);
+    const ip = typeof body.ip === "string" ? normalizeIp(body.ip) : null;
     const reason =
       typeof body.reason === "string" ? body.reason.trim().slice(0, 200) : "";
     if (!ip)
@@ -189,10 +191,8 @@ export function registerAdmin(app: Hono<AppEnv>, d: AdminDeps) {
 
   app.delete("/api/admin/bans/:ip", guard, async (c) => {
     const ip = normalizeIp(c.req.param("ip"));
-    if (!ip)
-      return jsonError(c, 400, "invalid_body", {
-        message: COPY.route.ipInvalid,
-      });
+    // 路径里的键不是合法 IP = 该资源不存在，而不是「请求体非法」。
+    if (!ip) return jsonError(c, 404, "not_found");
     try {
       const ok = await repo.banRemove(ip);
       return ok ? c.body(null, 204) : jsonError(c, 404, "not_found");
@@ -289,7 +289,10 @@ export function registerAdmin(app: Hono<AppEnv>, d: AdminDeps) {
         }),
       });
     // Second proof of ADMIN_SECRET: a stolen session cookie must not wipe the DB.
-    if (typeof body.secret !== "string" || body.secret !== cfg.adminSecret)
+    if (
+      typeof body.secret !== "string" ||
+      !constantTimeEqual(body.secret, cfg.adminSecret)
+    )
       return jsonError(c, 401, "invalid_secret");
     const verdict = verifyPurgeToken(
       typeof body.token === "string" ? body.token : undefined,

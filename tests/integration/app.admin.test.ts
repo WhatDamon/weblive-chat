@@ -81,6 +81,30 @@ describe("admin API", () => {
     expect(after.bans).toHaveLength(0);
   });
 
+  test("封禁非法 IP → 400（不是默默落库一个坏值）", async () => {
+    const { app } = await boot();
+    const login = await app.request("/api/admin/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ secret: "test-secret" }),
+    });
+    const cookie = (login.headers.get("set-cookie") ?? "").split(";")[0];
+    for (const ip of ["999.1.1.1", "::::", "", "not-an-ip"]) {
+      const res = await app.request("/api/admin/bans", {
+        method: "POST",
+        headers: { cookie, "content-type": "application/json" },
+        body: JSON.stringify({ ip, reason: "x" }),
+      });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error.code).toBe("invalid_body");
+    }
+    const del = await app.request("/api/admin/bans/999.1.1.1", {
+      method: "DELETE",
+      headers: { cookie },
+    });
+    expect(del.status).toBe(404);
+  });
+
   test("封禁列表 limit/offset 只收整数：12.5/负数 → 400 invalid_cursor（非 503）", async () => {
     const { app } = await boot();
     const login = await app.request("/api/admin/login", {
