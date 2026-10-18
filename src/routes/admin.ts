@@ -1,6 +1,6 @@
 import type { Context, Hono, Next } from "hono";
 import type { AppConfig } from "../lib/config";
-import type { Repo } from "../lib/repo";
+import type { AdminRepo } from "../lib/ports";
 import type { HistoryMode } from "../lib/history";
 import {
   signToken,
@@ -34,7 +34,7 @@ import {
 
 export interface AdminDeps {
   cfg: AppConfig;
-  repo: Repo;
+  repo: AdminRepo;
   history: { retentionDays: number; mode: HistoryMode };
   maintain: (now?: number) => { mode: HistoryMode; retentionDays: number };
 }

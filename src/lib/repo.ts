@@ -7,6 +7,15 @@ import {
   ephemeralMessageId,
   messageEventPayload,
 } from "./events";
+import type { RateSink } from "./limits";
+import type {
+  BanStore,
+  EventOutbox,
+  MaintenanceStore,
+  MessageStore,
+  PresenceStore,
+  PurgeStore,
+} from "./ports";
 import {
   PURGE_ALL_TABLES,
   PURGE_TABLES,
@@ -43,60 +52,17 @@ export interface BanRow {
   created_at: number;
 }
 
-export interface Repo {
+export interface Repo
+  extends MessageStore,
+    EventOutbox,
+    PresenceStore,
+    BanStore,
+    PurgeStore,
+    MaintenanceStore,
+    RateSink {
   readonly provider: Provider;
   bootstrap(): Promise<void>;
   close(): Promise<void>;
-  /** Cheapest liveness probe: SELECT 1. */
-  ping(): Promise<void>;
-  /** 运维探针：已应用的 schema 版本 + 关键索引名（health 与测试共用）。 */
-  schemaInfo(): Promise<{ version: number; indexes: string[] }>;
-  /** Single-tx dual write; payload.id = String(messageId) so clients can dedupe. */
-  sendMessageAndEvent(
-    m: MessageInput,
-  ): Promise<{ messageId: number; eventId: number }>;
-  /** Live-only broadcast: one INSERT, id "e<uuid>" avoids the messages.id namespace. */
-  publishEphemeralMessage(m: MessageInput): Promise<{ messageId: string }>;
-  insertEvent(
-    type: string,
-    payload: string,
-    created_at: number,
-  ): Promise<number>;
-  eventsSince(since: number, limit: number): Promise<EventRow[]>;
-  eventsMaxId(): Promise<number>;
-  historyBefore(before: number, limit: number): Promise<MessageRow[]>;
-  /** 第 offset 新的消息 id（0 起，id 倒序），越界返回 null。 */
-  idAtOffset(offset: number): Promise<number | null>;
-  historySince(since: number, limit: number): Promise<MessageRow[]>;
-  /** 单事务：软删成功才写 delete 事件；返回是否真的删了（重复删 = false，不重复广播）。 */
-  softDeleteMessageAndEvent(
-    id: number,
-    by: string,
-    at: number,
-  ): Promise<boolean>;
-  banUpsert(
-    ip: string,
-    reason: string,
-    by: string,
-    at: number,
-  ): Promise<boolean>;
-  banGet(ip: string): Promise<{ reason: string; created_at: number } | null>;
-  banList(limit: number, offset: number): Promise<BanRow[]>;
-  banRemove(ip: string): Promise<boolean>;
-  presenceUpsert(clientId: string, at: number): Promise<void>;
-  presenceCount(cutoff: number): Promise<number>;
-  rateHit(bucket: string, scope: string, windowStart: number): Promise<number>;
-  /** Physical row count incl. soft-deleted rows; capacity and degrade decisions must use this. */
-  messageStats(): Promise<{ total: number; retained: number }>;
-  cleanupEvents(before: number): Promise<number>;
-  cleanupPresence(before: number): Promise<number>;
-  cleanupRateLimits(before: number): Promise<number>;
-  trimMessagesBelow(idFloor: number): Promise<number>;
-  deleteMessagesOlderThan(cutoff: number): Promise<number>;
-  /** Purge preview: read-only per-table row counts. */
-  purgeCounts(): Promise<PurgeCounts>;
-  /** Purges only PURGE_TABLES[scope]; returns actually deleted row counts. */
-  clearData(scope: PurgeScope): Promise<PurgeCounts>;
 }
 
 const mapMessage = (r: any): MessageRow => ({

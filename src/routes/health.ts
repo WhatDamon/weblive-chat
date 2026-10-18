@@ -1,7 +1,6 @@
 import type { Hono } from "hono";
 import type { AppEnv } from "../lib/http";
 import type { AppConfig } from "../lib/config";
-import type { Repo } from "../lib/repo";
 import type { HistoryMode } from "../lib/history";
 import { logError } from "../lib/log";
 import { metricsSnapshot } from "../lib/metrics";
@@ -12,7 +11,11 @@ import { metricsSnapshot } from "../lib/metrics";
  */
 export function registerHealth(
   app: Hono<AppEnv>,
-  d: { cfg: AppConfig; repo: Repo; history: { mode: HistoryMode } },
+  d: {
+    cfg: AppConfig;
+    repo: { provider: string; ping(): Promise<void> };
+    history: { mode: HistoryMode };
+  },
 ) {
   app.get("/api/health", async (c) => {
     const base = {

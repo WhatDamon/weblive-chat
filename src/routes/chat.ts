@@ -1,6 +1,6 @@
 import type { Context, Hono } from "hono";
 import type { AppConfig } from "../lib/config";
-import type { Repo } from "../lib/repo";
+import type { ChatRepo } from "../lib/ports";
 import { MAX_ID_BOUND, type HistoryMode } from "../lib/history";
 import { clientIpFromHeaders } from "../lib/security";
 import { validateMessageBody, validUuid } from "../lib/validate";
@@ -20,7 +20,7 @@ import type { WordFilter } from "../lib/wordfilter";
 
 export interface ChatDeps {
   cfg: AppConfig;
-  repo: Repo;
+  repo: ChatRepo;
   history: { mode: HistoryMode; retentionDays: number };
   maintain?: (now?: number) => { mode: HistoryMode; retentionDays: number };
   getFilter?: () => Promise<WordFilter>;
