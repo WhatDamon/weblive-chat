@@ -131,6 +131,56 @@ describe("runStream", () => {
     ).toBe(true);
   });
 
+  test("since 恰好等于 maxId：不回退游标、不重放已读事件", async () => {
+    // 审查重点第 4 条的边界：游标正好停在最后一条上，探测不能把 since 拉回去重放。
+    let arrived = false;
+    const seen: number[] = [];
+    const repo = {
+      eventsSince: async (since: number, limit: number) => {
+        const live = arrived
+          ? [
+              {
+                id: 251,
+                type: "message",
+                payload: JSON.stringify({ id: "251" }),
+                created_at: 1,
+              },
+            ]
+          : [];
+        return [
+          {
+            id: 250,
+            type: "message",
+            payload: JSON.stringify({ id: "250" }),
+            created_at: 1,
+          },
+        ]
+          .concat(live)
+          .filter((e) => e.id > since)
+          .slice(0, limit);
+      },
+      eventsMaxId: async () => (arrived ? 251 : 250),
+      presenceUpsert: async () => {},
+      presenceCount: async () => 1,
+      banGet: async () => null,
+    };
+    const h = runStream({
+      repo: repo as any,
+      clientId: "c",
+      since: 250,
+      cfg: { ...cfg, eventProbeMs: 0 },
+      emit: (type, data) => {
+        if (type === "message") seen.push(Number((data as any).id));
+      },
+    });
+    await sleep(10);
+    expect(seen).toEqual([]); // 250 已经读过，不能重放
+    arrived = true;
+    await sleep(20);
+    h.stop();
+    expect(seen).toEqual([251]); // 游标只向前，新事件照常收到
+  });
+
   test("空闲无任何写出超 heartbeatMs → emitComment 收到 ping 保活", async () => {
     const f = fakeRepo(); // No events, constant presence count: idle after the first push
     const comments: string[] = [];
