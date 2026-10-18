@@ -16,11 +16,13 @@
     "lint": "biome check .",
     "format": "biome check --write .",
     "typecheck": "tsc --noEmit",
-    "test:pg": "DB_PROVIDER=postgres bun test tests/integration"
+    "test:pg": "DB_PROVIDER=postgres bun test tests/integration",
+    "typecheck:node": "tsc -p tsconfig.node.json"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.15",
     "@types/bun": "latest",
+    "@types/node": "^26.6.5",
     "typescript": "^7.0.2"
   },
   "dependencies": {

@@ -11,6 +11,8 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run lint
       - run: bun run typecheck
+      - run: bun run typecheck:node
+      - run: "! rg -n 'Bun\\.' src --glob '!src/index.ts'"
       - run: bun run test:coverage
 
   postgres:
