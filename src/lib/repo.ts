@@ -42,6 +42,8 @@ export interface Repo {
   readonly provider: Provider;
   bootstrap(): Promise<void>;
   close(): Promise<void>;
+  /** Cheapest liveness probe: SELECT 1. */
+  ping(): Promise<void>;
   /** Single-tx dual write; payload.id = String(messageId) so clients can dedupe. */
   sendMessageAndEvent(
     m: MessageInput,
@@ -180,6 +182,10 @@ class SqliteRepo implements Repo {
     // One round trip: libsql batch() ships the whole idempotent DDL in a single request.
     await this.c.batch([...ddlFor("sqlite")], "write");
   }
+  async ping(): Promise<void> {
+    await this.c.execute("SELECT 1");
+  }
+
   async close(): Promise<void> {
     this.c.close();
   }
@@ -395,6 +401,9 @@ class PostgresRepo implements Repo {
   constructor(private sql: postgres.Sql<{}>) {}
   async bootstrap(): Promise<void> {
     for (const d of ddlFor("postgres")) await this.sql.unsafe(d);
+  }
+  async ping(): Promise<void> {
+    await this.sql.unsafe("SELECT 1");
   }
   async close(): Promise<void> {
     await this.sql.end();
@@ -624,6 +633,7 @@ class MemoryRepo implements Repo {
   private rates = new Map<string, number>();
 
   async bootstrap(): Promise<void> {}
+  async ping(): Promise<void> {}
   async close(): Promise<void> {}
 
   async sendMessageAndEvent(

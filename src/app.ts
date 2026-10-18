@@ -5,6 +5,7 @@ import { classifyOrigin, normalizeOrigin } from "./lib/security";
 import { jsonError, getRequestId, type AppEnv } from "./lib/http";
 import { logError, newRequestId } from "./lib/log";
 import { registerChat } from "./routes/chat";
+import { registerHealth } from "./routes/health";
 import { registerAdmin } from "./routes/admin";
 import { registerPages } from "./routes/pages";
 import { newHistoryState, performMaintenance } from "./lib/history";
@@ -131,6 +132,7 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
     return { mode: history.mode, retentionDays: history.retentionDays };
   };
 
+  registerHealth(app, { cfg, repo, history });
   registerChat(app, { cfg, repo, history, maintain, getFilter });
   // Admin routes rely on the /api/* middleware for the origin gate and CORS headers.
   registerAdmin(app, { cfg, repo, history, maintain });
