@@ -268,6 +268,30 @@ describe("chat 公开端点", () => {
     expect(body.mode).toBeDefined();
   });
 
+  test("backfill 边界用 idAtOffset 取，不再多读 backfillMax 行", async () => {
+    const { app, repo } = await boot({ backfillMax: 2 });
+    for (const t of ["a", "b", "c"]) {
+      await app.request("/api/messages", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-forwarded-for": "3.3.3.5",
+        },
+        body: JSON.stringify({ client_id: UUID, nick: "n", text: t }),
+      });
+    }
+    // 记录 historyBefore 的 limit 参数：主查询是 50，旧的 cutoff 查询会是 2。
+    const limits: number[] = [];
+    const orig = repo.historyBefore.bind(repo);
+    (repo as any).historyBefore = async (b: number, l: number) => {
+      limits.push(l);
+      return orig(b, l);
+    };
+    const body = await (await app.request("/api/messages?limit=50")).json();
+    expect(body.messages.map((m: any) => m.id)).toEqual(["3", "2"]);
+    expect(limits).toEqual([50]); // 只有主查询，没有为算边界多读一次
+  });
+
   test("Origin 白名单 fail-closed + 开放模式回 ACAO *", async () => {
     const open = await boot();
     const r1 = await open.app.request("/api/meta", {

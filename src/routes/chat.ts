@@ -98,8 +98,9 @@ export function registerChat(app: Hono<AppEnv>, d: ChatDeps) {
       else rows = await repo.historyBefore(MAX_ID_BOUND, limit);
       let cutoff: number | null = null;
       if (cfg.backfillMax > 0) {
-        const keep = await repo.historyBefore(MAX_ID_BOUND, cfg.backfillMax);
-        cutoff = keep.length >= cfg.backfillMax ? keep[keep.length - 1].id : 0;
+        // 第 backfillMax 新的 id 就是回溯下界；null 说明行数不足，不设限。
+        // 以前这里读回 backfillMax 行再取末行 id，等于为了一个数字搬 N 行。
+        cutoff = (await repo.idAtOffset(cfg.backfillMax - 1)) ?? 0;
       }
       const filtered =
         cutoff === null ? rows : rows.filter((m) => m.id >= cutoff);
