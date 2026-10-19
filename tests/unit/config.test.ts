@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { loadConfig } from "../../src/lib/config";
+import { testCfg } from "../helpers";
 
 const base = { NODE_ENV: "test", ADMIN_SECRET: "s3cret" };
 
@@ -113,5 +114,47 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ ...base, BANNED_WORDS_MODE: "loose" })).toThrow(
       /BANNED_WORDS_MODE/,
     );
+  });
+
+  test("RATE_HISTORY_PER_MIN 默认 60", () => {
+    expect(loadConfig({ ...base }).rate.historyPerMin).toBe(60);
+  });
+
+  test("生产口令：占位值/过短拒绝启动", () => {
+    const p = { NODE_ENV: "production", DB_PROVIDER: "sqlite" };
+    expect(() =>
+      loadConfig({ ...p, ADMIN_SECRET: "replace-with-a-long-random-string" }),
+    ).toThrow(/ADMIN_SECRET/);
+    expect(() => loadConfig({ ...p, ADMIN_SECRET: "short" })).toThrow(
+      /ADMIN_SECRET/,
+    );
+    expect(() =>
+      loadConfig({ ...p, ADMIN_SECRET: "x".repeat(16) }),
+    ).not.toThrow();
+  });
+
+  test("BANNED_WORDS_DIR 空串/空白回落到 cwd/data/banned", () => {
+    const def = join(process.cwd(), "data/banned");
+    expect(loadConfig({ ...base, BANNED_WORDS_DIR: "" }).bannedWordsDir).toBe(
+      def,
+    );
+    expect(
+      loadConfig({ ...base, BANNED_WORDS_DIR: "   " }).bannedWordsDir,
+    ).toBe(def);
+  });
+
+  test("RateCfg 不再包含未使用的 windowMs", () => {
+    const cfg = loadConfig({ ...base });
+    expect("windowMs" in cfg.rate).toBe(false);
+  });
+});
+
+describe("测试夹具", () => {
+  test("testCfg 自动继承 loadConfig 的新字段（无手工漂移）", () => {
+    const c = testCfg();
+    expect(c.adminRequireOrigin).toBe(false);
+    expect(c.rate.historyPerMin).toBe(60);
+    expect(c.pgPrepare).toBe(true);
+    expect(c.statsTtlMs).toBe(60_000);
   });
 });

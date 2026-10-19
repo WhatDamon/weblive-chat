@@ -1,4 +1,4 @@
-import { describe, expect, test, afterEach } from "bun:test";
+import { describe, expect, test, afterEach, setSystemTime } from "bun:test";
 import { makeApp, UUID } from "../helpers";
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -81,6 +81,73 @@ describe("admin API", () => {
     expect(after.bans).toHaveLength(0);
   });
 
+  test("管理写操作：跨站 Origin 403，同源放行，缺 Origin 403", async () => {
+    const { app } = await boot({ adminRequireOrigin: true } as never);
+    // 登录本身也是写操作：浏览器会带 Origin，curl 则必须显式提供。
+    const login = await app.request("http://chat.example.com/api/admin/login", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: "http://chat.example.com",
+      },
+      body: JSON.stringify({ secret: "test-secret" }),
+    });
+    expect(login.status).toBe(200);
+    const cookie = (login.headers.get("set-cookie") ?? "").split(";")[0];
+    const ban = (origin?: string) =>
+      app.request("http://chat.example.com/api/admin/bans", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          cookie,
+          ...(origin ? { origin } : {}),
+        },
+        body: JSON.stringify({ ip: "1.2.3.4", reason: "x" }),
+      });
+
+    const evil = await ban("https://evil.example.com");
+    expect(evil.status).toBe(403);
+    expect(((await evil.json()) as any).error.code).toBe("origin_not_allowed");
+
+    // 同源放行：Origin 必须与请求自身的 host/proto 对上。
+    const same = await ban("http://chat.example.com");
+    expect([200, 201]).toContain(same.status);
+
+    const none = await ban();
+    expect(none.status).toBe(403);
+    expect(((await none.json()) as any).error.code).toBe("missing_origin");
+
+    // 读接口不受限：只读监控不该因为不带 Origin 而挂掉。
+    const read = await app.request("http://chat.example.com/api/admin/stats", {
+      headers: { cookie, origin: "https://evil.example.com" },
+    });
+    expect(read.status).toBe(200);
+  });
+
+  test("封禁非法 IP → 400（不是默默落库一个坏值）", async () => {
+    const { app } = await boot();
+    const login = await app.request("/api/admin/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ secret: "test-secret" }),
+    });
+    const cookie = (login.headers.get("set-cookie") ?? "").split(";")[0];
+    for (const ip of ["999.1.1.1", "::::", "", "not-an-ip"]) {
+      const res = await app.request("/api/admin/bans", {
+        method: "POST",
+        headers: { cookie, "content-type": "application/json" },
+        body: JSON.stringify({ ip, reason: "x" }),
+      });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error.code).toBe("invalid_body");
+    }
+    const del = await app.request("/api/admin/bans/999.1.1.1", {
+      method: "DELETE",
+      headers: { cookie },
+    });
+    expect(del.status).toBe(404);
+  });
+
   test("封禁列表 limit/offset 只收整数：12.5/负数 → 400 invalid_cursor（非 503）", async () => {
     const { app } = await boot();
     const login = await app.request("/api/admin/login", {
@@ -152,7 +219,6 @@ describe("危险操作：清空数据（多重校验）", () => {
     streamPerMin: 20,
     loginPerMin: 5,
     purgePerMin: 10,
-    windowMs: 60_000,
   };
   const IP = "1.1.1.1";
   const bootPurge = (extra: any = {}) => boot({ rate: PURGE_RATE, ...extra });
@@ -219,6 +285,47 @@ describe("危险操作：清空数据（多重校验）", () => {
     expect(p.counts.events).toBe(1);
     expect(typeof p.token).toBe("string");
     expect(p.expires_at).toBeGreaterThan(Date.now());
+  });
+
+  test("同一 purge 令牌跨 60s 窗口重放仍被拒", async () => {
+    const { app } = await bootPurge();
+    const cookie = await login(app);
+    await seedMsg(app);
+    setSystemTime(new Date("2026-01-01T00:00:59.800Z"));
+    const pv = await (await preview(app, cookie, "chat")).json();
+    const body = {
+      scope: "chat",
+      confirm: pv.confirm_phrase,
+      secret: "test-secret",
+      token: pv.token,
+    };
+    // 首次执行在 00:00 窗口记账，重放落在 00:01 窗口。
+    setSystemTime(new Date("2026-01-01T00:00:59.900Z"));
+    const first = await commit(app, cookie, body);
+    expect(first.status).toBe(200);
+    setSystemTime(new Date("2026-01-01T00:01:00.100Z"));
+    const second = await commit(app, cookie, body);
+    expect(second.status).toBe(400);
+    expect((await second.json()).error.code).toBe("invalid_token");
+    setSystemTime();
+  });
+
+  test("full 清空后，同一令牌仍被判为已使用", async () => {
+    const { app } = await bootPurge();
+    const cookie = await login(app);
+    await seedMsg(app);
+    const pv = await (await preview(app, cookie, "full")).json();
+    const body = {
+      scope: "full",
+      confirm: pv.confirm_phrase,
+      secret: "test-secret",
+      token: pv.token,
+    };
+    const first = await commit(app, cookie, body);
+    expect(first.status).toBe(200);
+    const second = await commit(app, cookie, body);
+    expect(second.status).toBe(400);
+    expect((await second.json()).error.code).toBe("invalid_token");
   });
 
   test("执行：缺口令 / 错口令 → 401；短语不符 → 400 invalid_confirm", async () => {

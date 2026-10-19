@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   normalizeIp,
+  constantTimeEqual,
   clientIpFromHeaders,
   normalizeOrigin,
   parseOriginList,
@@ -10,11 +11,22 @@ import {
 } from "../../src/lib/security";
 
 describe("IP", () => {
-  test("normalizeIp：trim/小写/非法返回 null", () => {
+  test("normalizeIp：拒绝非 IP，mapped 归一为 IPv4，v6 小写", () => {
     expect(normalizeIp(" 1.2.3.4 ")).toBe("1.2.3.4");
-    expect(normalizeIp("::ffff:1.2.3.4")).toBe("::ffff:1.2.3.4");
+    expect(normalizeIp("999.1.1.1")).toBeNull();
+    expect(normalizeIp("::::")).toBeNull();
     expect(normalizeIp("not-an-ip")).toBeNull();
     expect(normalizeIp("")).toBeNull();
+    // 双栈客户端会以 mapped 形式出现：归一到 v4 才能和封禁记录对上。
+    expect(normalizeIp("::ffff:1.2.3.4")).toBe("1.2.3.4");
+    expect(normalizeIp("2001:DB8::1")).toBe("2001:db8::1");
+  });
+
+  test("constantTimeEqual：相等为真，长度不同不抛错", () => {
+    expect(constantTimeEqual("abc", "abc")).toBe(true);
+    expect(constantTimeEqual("abc", "abd")).toBe(false);
+    expect(constantTimeEqual("abc", "abcd")).toBe(false);
+    expect(constantTimeEqual("", "")).toBe(true);
   });
   test("clientIpFromHeaders：取 x-forwarded-for 首跳，缺失回退", () => {
     expect(
@@ -24,6 +36,16 @@ describe("IP", () => {
       ),
     ).toBe("9.8.7.6");
     expect(clientIpFromHeaders({}, "127.0.0.1")).toBe("127.0.0.1");
+    // 首项非法不能就此放行：继续找第一个合法项。
+    expect(
+      clientIpFromHeaders(
+        { "x-forwarded-for": " 999.1.1.1 , 1.2.3.4 " },
+        "127.0.0.1",
+      ),
+    ).toBe("1.2.3.4");
+    expect(
+      clientIpFromHeaders({ "x-forwarded-for": "garbage" }, "127.0.0.1"),
+    ).toBe("127.0.0.1");
   });
 });
 
@@ -134,7 +156,7 @@ describe("HMAC 会话 Cookie", () => {
   test("sign+verify 往返；篡改/过期/换密钥均拒绝", () => {
     const token = signToken({ sub: "admin", exp: Date.now() + 60_000 }, secret);
     expect(verifyToken(token, secret)).toMatchObject({ sub: "admin" });
-    expect(verifyToken(token.slice(0, -2) + "xx", secret)).toBeNull();
+    expect(verifyToken(`${token.slice(0, -2)}xx`, secret)).toBeNull();
     expect(
       verifyToken(
         signToken({ sub: "admin", exp: Date.now() - 1 }, secret),

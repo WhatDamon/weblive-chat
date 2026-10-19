@@ -21,6 +21,7 @@ export const COPY = {
     invalid_token: "预检已失效，请重新预检",
     not_found: "资源不存在",
     db_unavailable: "数据库暂不可用",
+    payload_too_large: "请求体过大",
   },
 
   // Route-level messages that replace the default error text.

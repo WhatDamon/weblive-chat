@@ -11,14 +11,14 @@ const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const tmp = mkdtempSync(join(tmpdir(), "wl-smoke-"));
 const dbPath = join(tmp, "smoke.db");
 let child: ChildProcess | null = null; // Module scope: the error path must still clean up
-const ADMIN_SECRET = "smoke-" + crypto.randomUUID();
+const ADMIN_SECRET = `smoke-${crypto.randomUUID()}`;
 const XFF_A = "9.9.9.8"; // Banned mid-run: chats first, then banned
 const XFF_B = "9.9.9.9"; // Bystander: never banned
 
 let fails = 0;
 const check = (name: string, cond: boolean, extra = "") => {
   console.log(
-    `${cond ? "PASS" : "FAIL"}  ${name}${extra ? "  [" + extra + "]" : ""}`,
+    `${cond ? "PASS" : "FAIL"}  ${name}${extra ? `  [${extra}]` : ""}`,
   );
   if (!cond) fails++;
 };
@@ -57,7 +57,8 @@ async function stopServer(): Promise<void> {
 }
 
 async function main() {
-  const proc: ChildProcess = (child = spawn("bun", ["src/index.ts"], {
+  // 局部常量供内部闭包使用（模块级的 child 可能被 error 路径清空）。
+  const proc: ChildProcess = spawn("bun", ["src/index.ts"], {
     cwd: ROOT,
     env: {
       ...process.env,
@@ -69,15 +70,16 @@ async function main() {
       REQUIRE_ORIGIN: "0",
     } as Record<string, string>,
     stdio: ["ignore", "pipe", "pipe"],
-  }));
+  });
+  child = proc;
   let outBuf = "";
-  void proc.stderr?.on("data", (d) => process.stderr.write("[srv-err] " + d));
+  void child.stderr?.on("data", (d) => process.stderr.write(`[srv-err] ${d}`));
   const ready = new Promise<number>((resolve, reject) => {
     const timer = setTimeout(
-      () => reject(new Error("startup timed out; stdout:\n" + outBuf)),
+      () => reject(new Error(`startup timed out; stdout:\n${outBuf}`)),
       20_000,
     );
-    proc.stdout!.on("data", (d) => {
+    proc.stdout?.on("data", (d: Buffer) => {
       outBuf += d.toString();
       const m = outBuf.match(/http:\/\/localhost:(\d+)/);
       if (m) {

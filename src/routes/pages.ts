@@ -1,7 +1,10 @@
 import type { Context, Hono } from "hono";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { COPY, fill, lookupCopy } from "../lib/copy";
+import type { AppEnv } from "../lib/http";
+import { logError } from "../lib/log";
 
 // cwd is the repo root locally; vercel.json includeFiles ships public/** to the function.
 const readPublic = async (file: string) => {
@@ -18,31 +21,82 @@ const copyBootstrap = () =>
 /** Replaces {{a.b}} with copy.ts text and <!--COPY--> with the bootstrap script. */
 export function renderPage(html: string): string {
   return html
-    .replace(
-      TOKEN,
-      (raw, path: string) =>
-        lookupCopy(path) ??
-        (console.error(`[copy] undefined placeholder: ${raw}`), raw),
-    )
+    .replace(TOKEN, (raw, path: string) => {
+      const hit = lookupCopy(path);
+      if (hit !== undefined) return hit;
+      logError("pages", new Error(`[copy] undefined placeholder: ${raw}`));
+      return raw;
+    })
     .replace("<!--COPY-->", copyBootstrap());
 }
 
 // Pages are static per deployment: let the edge serve repeats so page loads cost no instance time.
 const PAGE_CACHE = "public, s-maxage=300, stale-while-revalidate=600";
 
-const serve = async (c: Context, file: string) => {
+type Rendered = { html: string; csp: string };
+// Per-instance memo: rendering is pure, so a cold instance pays it once per file.
+const cache = new Map<string, Rendered>();
+const stats = { hits: 0, misses: 0 };
+
+/** Inline block bodies → 'sha256-…'; zero-build pages pass CSP by hash, never unsafe-inline. */
+const inlineHashes = (html: string, tag: "script" | "style"): string[] =>
+  [...html.matchAll(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, "g"))].map(
+    (m) => `'sha256-${createHash("sha256").update(m[1]).digest("base64")}'`,
+  );
+
+export function cspFor(html: string): string {
+  const script = inlineHashes(html, "script");
+  const style = inlineHashes(html, "style");
+  return [
+    "default-src 'self'",
+    ["script-src 'self'", ...script].join(" "),
+    ["style-src 'self'", ...style].join(" "),
+    "connect-src 'self'",
+    "img-src 'self' data:",
+    "base-uri 'none'",
+    "form-action 'none'",
+    "frame-ancestors 'none'",
+  ].join("; ");
+}
+
+export function clearPageCache(): void {
+  cache.clear();
+  stats.hits = 0;
+  stats.misses = 0;
+}
+
+export function pageCacheStats(): { hits: number; misses: number } {
+  return { ...stats };
+}
+
+const serve = async (c: Context<AppEnv>, file: string) => {
   c.header("cache-control", PAGE_CACHE);
   try {
-    return c.html(renderPage(await readPublic(file)));
+    let r = cache.get(file);
+    if (r) stats.hits += 1;
+    else {
+      stats.misses += 1;
+      const html = renderPage(await readPublic(file));
+      r = { html, csp: cspFor(html) };
+      cache.set(file, r);
+    }
+    c.header("content-security-policy", r.csp);
+    return c.html(r.html);
   } catch {
     return c.body(fill(COPY.route.pageMissing, { file }), 404);
   }
 };
 
-export function registerPages(app: Hono) {
+export function registerPages(app: Hono<AppEnv>) {
   app.get("/", (c) => {
     c.header("cache-control", PAGE_CACHE);
     return c.redirect("/demo.html", 302);
+  });
+  // 客户端退避脚本：零构建静态资源，不做 {{ }} 渲染，也不参与页面缓存。
+  app.get("/retry.js", async (c) => {
+    c.header("cache-control", PAGE_CACHE);
+    c.header("content-type", "application/javascript; charset=utf-8");
+    return c.body(await readPublic("retry.js"));
   });
   app.get("/demo.html", (c) => serve(c, "demo.html"));
   app.get("/admin", (c) => serve(c, "admin.html"));

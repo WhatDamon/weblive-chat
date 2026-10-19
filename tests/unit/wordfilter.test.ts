@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -99,5 +99,19 @@ describe("loadWordFilter", () => {
     });
     expect(f.scan("这里有环境禁词")).toBe("环境禁词");
     expect(f.scan("这里有测试禁词")).toBe(null);
+  });
+
+  test("basic 模式加载到 0 个词时大声告警", async () => {
+    const lines: string[] = [];
+    const spy = spyOn(console, "error").mockImplementation((s) => {
+      lines.push(String(s));
+    });
+    const f = await loadWordFilter({
+      mode: "basic",
+      dir: join(tmpdir(), "wl-no-such-dir"),
+    });
+    expect(f.size).toBe(0);
+    expect(lines.some((l) => l.includes("0 words"))).toBe(true);
+    spy.mockRestore();
   });
 });

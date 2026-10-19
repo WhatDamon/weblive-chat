@@ -1,10 +1,10 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRepo } from "../src/lib/repo";
 import type { Repo } from "../src/lib/repo";
-import { createApp } from "../src/app";
-import type { AppConfig, Provider } from "../src/lib/config";
+import { createAppWithHandle } from "../src/app";
+import { loadConfig, type AppConfig, type Provider } from "../src/lib/config";
 
 export type TestProvider = Provider;
 
@@ -34,47 +34,32 @@ export async function makeRepo(explicit?: TestProvider): Promise<{
   };
 }
 
+// 由真实 loadConfig 生成：新增 AppConfig 字段时夹具自动跟上，
+// 不再因为手写对象漏字段而在无关测试里报 TS2741。
+const testBase = loadConfig({
+  NODE_ENV: "test",
+  DB_PROVIDER: "sqlite",
+  DATABASE_URL: "file:cfg-placeholder.db",
+  ADMIN_SECRET: "test-secret",
+  BANNED_WORDS_MODE: "off",
+  BANNED_WORDS: "赌博",
+  BANNED_WORDS_DIR: join(tmpdir(), "wl-no-words"),
+});
+
 export function testCfg(over: Partial<AppConfig> = {}): AppConfig {
   return {
-    env: "test",
+    ...testBase,
+    // 下面这些不是 env，只有测试需要毫秒级而不是秒级。
     port: 0,
-    dbProvider: "sqlite",
-    // placeholder: makeApp builds the real repo in its own temp dir
-    databaseUrl: "file:cfg-placeholder.db",
-    adminSecret: "test-secret",
-    devIp: "127.0.0.1",
-    nickMax: 24,
-    textMax: 1000,
-    bannedWords: ["赌博"],
-    // wordfilter off by default: tests must not depend on the repo data/ dir
-    bannedWordsMode: "off",
-    bannedWordsDir: join(tmpdir(), "wl-no-words"),
-    bannedWordsAllow: [],
-    retentionDays: 90,
-    maxRows: 500_000,
-    backfillMax: 0,
-    presenceTtlMs: 45_000,
     pollMs: 10,
     idlePollMs: 10,
     idleAfterMs: 1_000_000,
     eventProbeMs: 0,
     presenceUpsertMs: 10,
     presenceCountMs: 10,
-    heartbeatMs: 15_000,
-    eventsTtlMs: 3_600_000,
-    maintenanceEvery: 100,
-    rate: {
-      msgPerMin: 10,
-      streamPerMin: 20,
-      loginPerMin: 5,
-      purgePerMin: 5,
-      windowMs: 60_000,
-    },
-    allowedOrigins: [],
-    requireOrigin: false,
-    sessionDays: 7,
-    cookieName: "wl_admin",
     ...over,
+    // rate 里新增字段时，部分覆盖不能把其余限流桶一起抹掉（否则 undefined 会让整桶永远 429）。
+    rate: { ...testBase.rate, ...over.rate },
   };
 }
 
@@ -86,11 +71,13 @@ export async function makeApp(
     const cfg = testCfg({ ...over, dbProvider: "memory", databaseUrl: "" });
     const repo = await createRepo("memory", "");
     await repo.bootstrap();
-    const app = createApp({ cfg, repo });
+    // handle 里的 maintenance 让测试能用 flush() 等维护确定完成
+    const { app, maintenance } = createAppWithHandle({ cfg, repo });
     return {
       cfg,
       app,
       repo,
+      maintenance,
       cleanup: async () => {
         await repo.close();
       },
@@ -101,16 +88,30 @@ export async function makeApp(
   const cfg = testCfg({ ...over, databaseUrl: `file:${join(dir, "t.db")}` });
   const repo = await createRepo("sqlite", cfg.databaseUrl);
   await repo.bootstrap();
-  const app = createApp({ cfg, repo });
+  const { app, maintenance } = createAppWithHandle({ cfg, repo });
   return {
     cfg,
     app,
     repo,
+    maintenance,
     cleanup: async () => {
       await repo.close();
       rmSync(dir, { recursive: true, force: true });
     },
   };
+}
+
+/**
+ * 页面用 <script src="/retry.js"> 引入退避函数；DOM shim 不执行外链脚本，
+ * 所以测试执行同一份源码（读文件 + new Function），保证测的是真实实现。
+ * 用 new Function 而不是 import：public/ 没有类型声明，也不该为它开 allowJs。
+ */
+export function loadRetryScript(): void {
+  const src = readFileSync(
+    new URL("../public/retry.js", import.meta.url),
+    "utf8",
+  );
+  new Function(src)();
 }
 
 export const UUID = "11111111-2222-4333-8444-555555555555";
@@ -130,8 +131,10 @@ export async function readSse(
     const { done, value } = await reader.read();
     if (done) break;
     buf += decoder.decode(value, { stream: true });
-    let idx;
-    while ((idx = buf.indexOf("\n\n")) >= 0) {
+    for (;;) {
+      // 每轮重新定位：下面的 continue 不能跳过游标推进，否则死循环。
+      const idx = buf.indexOf("\n\n");
+      if (idx < 0) break;
       const block = buf.slice(0, idx);
       buf = buf.slice(idx + 2);
       const lines = block.split("\n");
@@ -142,7 +145,10 @@ export async function readSse(
         else if (line.startsWith("data:"))
           data = JSON.parse(line.slice(5).trim());
       }
-      if (data !== null) out.push({ type, data });
+      // ": ping" 注释与 "retry: 3000" 保留字段都不是事件：没有 data 就跳过，
+      // 否则 waitFor 会被一个 data=null 的块误触发。
+      if (data === null) continue;
+      out.push({ type, data });
       if (waitFor(type, data)) {
         await reader.cancel().catch(() => {});
         return out;

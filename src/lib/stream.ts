@@ -1,4 +1,5 @@
 import type { EventRow } from "./repo";
+import { logError } from "./log";
 
 export interface StreamRepo {
   eventsSince(since: number, limit: number): Promise<EventRow[]>;
@@ -26,69 +27,86 @@ export interface StreamOpts {
   since?: number;
   emit: (type: string, data: unknown) => void;
   emitComment?: (text: string) => void;
+  /** 注入时钟与休眠：单测可以把「静默 30 秒」压成微任务，时序断言才稳定。 */
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
 }
 
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+/** 单轮最多取多少条：与 eventsSince 的 LIMIT 约定一致。 */
+const POLL_LIMIT = 100;
+/** 单 tick 最多排空几轮：上限保证一次突发不会把 tick 拖成无限循环。 */
+const MAX_DRAIN_ROUNDS = 5;
 
 export function runStream(o: StreamOpts): { stop: () => void } {
+  const now = o.now ?? Date.now;
+  const sleep =
+    o.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   let stopped = false;
   let since = o.since ?? 0;
   let lastOnline: number | null = null;
-  let lastSent = Date.now();
-  let lastEventAt = Date.now();
+  let lastSent = now();
+  let lastEventAt = now();
   let lastProbe = 0;
   let lastUpsert = 0;
   let lastCount = 0;
   const emitComment = o.emitComment ?? (() => {});
 
   const tickPoll = async () => {
-    let rows = await o.repo.eventsSince(since, 100);
-    // Cursor fallback: events behind the cursor were already purged. Probed at most once per
-    // eventProbeMs, otherwise an idle stream would run two queries per tick instead of one.
-    if (
-      rows.length === 0 &&
-      since > 0 &&
-      Date.now() - lastProbe >= o.cfg.eventProbeMs
-    ) {
-      lastProbe = Date.now();
-      const maxId = await o.repo.eventsMaxId();
-      if (since > maxId) since = Math.max(maxId, 0);
-      rows = await o.repo.eventsSince(since, 100);
-    }
     let pushed = 0;
-    for (const e of rows) {
-      since = e.id;
-      let data: unknown = {};
-      try {
-        data = JSON.parse(e.payload);
-      } catch {
-        data = { raw: e.payload };
+    let probed = false;
+    // 一轮只取 100 条，突发时会积压；单 tick 内多排几轮，代价是有上限的额外查询。
+    for (let round = 0; round < MAX_DRAIN_ROUNDS; round++) {
+      let rows = await o.repo.eventsSince(since, POLL_LIMIT);
+      // Cursor fallback: events behind the cursor were already purged. Probed at most once per
+      // eventProbeMs (and once per tick), otherwise an idle stream would double its queries.
+      if (
+        rows.length === 0 &&
+        !probed &&
+        since > 0 &&
+        now() - lastProbe >= o.cfg.eventProbeMs
+      ) {
+        probed = true;
+        lastProbe = now();
+        const maxId = await o.repo.eventsMaxId();
+        if (since > maxId) since = Math.max(maxId, 0);
+        rows = await o.repo.eventsSince(since, POLL_LIMIT);
       }
-      o.emit(e.type, data);
-      pushed++;
+      for (const e of rows) {
+        since = e.id;
+        let data: unknown = {};
+        try {
+          data = JSON.parse(e.payload);
+        } catch {
+          data = { raw: e.payload };
+        }
+        o.emit(e.type, data);
+        pushed++;
+      }
+      // 不足一页说明已经排空，不必再多查一次。
+      if (rows.length < POLL_LIMIT) break;
     }
     // lastSent only advances on real writes, so an idle stream still reaches the heartbeat.
     if (pushed > 0) {
-      lastSent = Date.now();
+      lastSent = now();
       lastEventAt = lastSent;
     }
   };
   // Rate-gate presence writes and counts: at 1s ticks they would blow the DB write budget.
   const tickUpsert = async () => {
-    const now = Date.now();
-    if (now - lastUpsert < o.cfg.presenceUpsertMs) return;
-    lastUpsert = now;
-    await o.repo.presenceUpsert(o.clientId, now);
+    const at = now();
+    if (at - lastUpsert < o.cfg.presenceUpsertMs) return;
+    lastUpsert = at;
+    await o.repo.presenceUpsert(o.clientId, at);
   };
   const tickCount = async () => {
-    const now = Date.now();
-    if (now - lastCount < o.cfg.presenceCountMs) return;
-    lastCount = now;
-    const online = await o.repo.presenceCount(now - o.cfg.presenceTtlMs);
+    const at = now();
+    if (at - lastCount < o.cfg.presenceCountMs) return;
+    lastCount = at;
+    const online = await o.repo.presenceCount(at - o.cfg.presenceTtlMs);
     if (online !== lastOnline) {
       lastOnline = online;
       o.emit("presence", { online });
-      lastSent = Date.now();
+      lastSent = now();
     }
   };
 
@@ -97,32 +115,34 @@ export function runStream(o: StreamOpts): { stop: () => void } {
       const ban = await o.repo.banGet(o.cfg.ip);
       if (ban) {
         o.emit("ban", { reason: ban.reason }); // mute-only: keep the stream open
-        lastSent = Date.now();
+        lastSent = now();
       }
     }
     await tickUpsert();
     await tickCount();
-    lastUpsert = Date.now();
+    lastUpsert = now();
     lastCount = lastUpsert;
     while (!stopped) {
-      const cycleStart = Date.now();
+      const cycleStart = now();
       await tickPoll();
       if (stopped) break;
       await tickUpsert();
-      if (Date.now() - lastSent >= o.cfg.heartbeatMs) {
+      if (now() - lastSent >= o.cfg.heartbeatMs) {
         emitComment("ping");
-        lastSent = Date.now();
+        lastSent = now();
       }
       await tickCount();
-      const elapsed = Date.now() - cycleStart;
+      const elapsed = now() - cycleStart;
       // Quiet streams back off: fewer wakeups, fewer queries, and no held-open instance does realtime
       // work when nobody is talking. An event resets the cadence to pollMs.
-      const quiet = Date.now() - lastEventAt >= o.cfg.idleAfterMs;
+      const quiet = now() - lastEventAt >= o.cfg.idleAfterMs;
       const wait = quiet ? o.cfg.idlePollMs : o.cfg.pollMs;
       await sleep(Math.max(wait - elapsed, 0)); // keep ticks aligned
     }
   })().catch((err) => {
-    o.emit("error", { code: "db_unavailable", message: String(err) });
+    // 内部错误只进日志：SSE 帧对任意浏览器可见，不能带出 SQL/连接串。
+    logError("stream", err, { client_id: o.clientId, since });
+    o.emit("error", { code: "db_unavailable" });
     stopped = true;
   });
 

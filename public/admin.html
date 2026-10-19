@@ -24,6 +24,8 @@
   .muted { color: #666; font-size: 13px; }
   #login { display: block; }
   #panels { display: none; }
+  /* Hidden by default: CSP drops inline style attributes, so initial state lives here. */
+  #pRun { display: none; }
   pre.stats { margin: 4px 0; font-size: 13px; white-space: pre-wrap; }
   ul { margin: 6px 0; padding-left: 20px; }
   .card.danger { border-color: #e2b3ac; background: #fff8f7; }
@@ -81,7 +83,7 @@
         <label><input type="radio" name="pScope" value="full"> {{admin.purgeScopeFull}}</label>
       </div>
       <div class="row"><button id="pPreviewBtn">{{admin.purgePreviewBtn}}</button></div>
-      <div id="pRun" style="display:none">
+      <div id="pRun">
         <p class="muted" id="pSummary"></p>
         <p class="muted">{{admin.purgePhraseLabel}}<code id="pPhrase"></code></p>
         <div class="row">

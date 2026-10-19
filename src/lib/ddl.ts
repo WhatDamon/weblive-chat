@@ -20,5 +20,13 @@ export function ddlFor(provider: Provider): readonly string[] {
     `CREATE TABLE IF NOT EXISTS rate_limits (
       bucket text NOT NULL, scope text NOT NULL, window_start ${int} NOT NULL,
       count integer NOT NULL, PRIMARY KEY (bucket, scope, window_start))`,
+    // 清理任务按 created_at / window_start 扫，没有索引就是每次全表扫。
+    `CREATE INDEX IF NOT EXISTS idx_events_created_at ON events (created_at)`,
+    `CREATE INDEX IF NOT EXISTS idx_rate_limits_window ON rate_limits (window_start)`,
+    // 迁移锚点：后续结构变更按 version 递增，读取方能判断库是否已升级。
+    `CREATE TABLE IF NOT EXISTS schema_version (version integer PRIMARY KEY)`,
+    provider === "sqlite"
+      ? `INSERT OR IGNORE INTO schema_version (version) VALUES (1)`
+      : `INSERT INTO schema_version (version) VALUES (1) ON CONFLICT DO NOTHING`,
   ];
 }

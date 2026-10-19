@@ -1,27 +1,34 @@
 import type { Context, Hono } from "hono";
 import type { AppConfig } from "../lib/config";
-import type { Repo } from "../lib/repo";
+import type { ChatRepo } from "../lib/ports";
+import type { MessageRow } from "../lib/repo";
 import { MAX_ID_BOUND, type HistoryMode } from "../lib/history";
 import { clientIpFromHeaders } from "../lib/security";
 import { validateMessageBody, validUuid } from "../lib/validate";
 import { rateCheck } from "../lib/limits";
 import { runStream } from "../lib/stream";
-import { parseIdParam, jsonError, readJson } from "../lib/http";
+import {
+  parseIdParam,
+  parseSinceParam,
+  jsonError,
+  readJsonBody,
+  failDb,
+  type AppEnv,
+} from "../lib/http";
+import { decMetric, incMetric } from "../lib/metrics";
 import { COPY } from "../lib/copy";
 import type { WordFilter } from "../lib/wordfilter";
 
 export interface ChatDeps {
   cfg: AppConfig;
-  repo: Repo;
+  repo: ChatRepo;
   history: { mode: HistoryMode; retentionDays: number };
-  maintain?: (
-    now?: number,
-  ) => Promise<{ mode: HistoryMode; retentionDays: number }>;
+  maintain?: (now?: number) => { mode: HistoryMode; retentionDays: number };
   getFilter?: () => Promise<WordFilter>;
 }
 
 const iso = (ms: number) => new Date(ms).toISOString();
-const fmtMessage = (m: any) => ({
+const fmtMessage = (m: MessageRow) => ({
   id: String(m.id),
   client_id: m.client_id,
   nick: m.nick,
@@ -30,11 +37,11 @@ const fmtMessage = (m: any) => ({
   created_at: iso(m.created_at),
 });
 
-export function registerChat(app: Hono, d: ChatDeps) {
+export function registerChat(app: Hono<AppEnv>, d: ChatDeps) {
   const { cfg, repo } = d;
 
   /** Trust boundary: X-Forwarded-For is trusted only behind the platform proxy. */
-  const ipOf = (c: Context) =>
+  const ipOf = (c: Context<AppEnv>) =>
     clientIpFromHeaders(
       { "x-forwarded-for": c.req.header("x-forwarded-for") },
       cfg.devIp,
@@ -58,7 +65,7 @@ export function registerChat(app: Hono, d: ChatDeps) {
   app.get("/api/messages", async (c) => {
     try {
       const before = parseIdParam(c.req.query("before"));
-      const since = parseIdParam(c.req.query("since"));
+      const since = parseSinceParam(c.req.query("since"));
       if (before !== null && since !== null)
         return jsonError(c, 400, "invalid_body", {
           message: COPY.route.beforeSinceConflict,
@@ -70,17 +77,29 @@ export function registerChat(app: Hono, d: ChatDeps) {
           message: COPY.route.limitPositiveInt,
         });
       const limit = Math.min(Math.max(Number(rawLimit ?? 50), 1), 200);
+      // 独立桶：历史与发消息、开流的预算互不挤占。
+      const rl = await rateCheck(
+        repo,
+        "history",
+        ipOf(c),
+        cfg.rate.historyPerMin,
+      );
+      if (!rl.allowed)
+        return jsonError(c, 429, "rate_limited", {
+          retry_after_ms: rl.retryAfterMs,
+        });
       if (d.history.mode === "ephemeral")
         return c.json({ messages: [], mode: "ephemeral" });
-      let rows: any[];
+      let rows: MessageRow[];
       if (before !== null) rows = await repo.historyBefore(before, limit);
       else if (since !== null) rows = await repo.historySince(since, limit);
       // MAX_ID_BOUND is the PG int4 cursor ceiling; do not use MAX_SAFE_INTEGER here.
       else rows = await repo.historyBefore(MAX_ID_BOUND, limit);
       let cutoff: number | null = null;
       if (cfg.backfillMax > 0) {
-        const keep = await repo.historyBefore(MAX_ID_BOUND, cfg.backfillMax);
-        cutoff = keep.length >= cfg.backfillMax ? keep[keep.length - 1].id : 0;
+        // 第 backfillMax 新的 id 就是回溯下界；null 说明行数不足，不设限。
+        // 以前这里读回 backfillMax 行再取末行 id，等于为了一个数字搬 N 行。
+        cutoff = (await repo.idAtOffset(cfg.backfillMax - 1)) ?? 0;
       }
       const filtered =
         cutoff === null ? rows : rows.filter((m) => m.id >= cutoff);
@@ -88,16 +107,20 @@ export function registerChat(app: Hono, d: ChatDeps) {
         messages: filtered.map(fmtMessage),
         mode: d.history.mode,
       });
-    } catch {
+    } catch (err) {
       // Storage failures become 503: this read is polled and must not surface as a 500.
-      return jsonError(c, 503, "db_unavailable");
+      return failDb(c, "chat.messages.get", err);
     }
   });
 
   app.post("/api/messages", async (c) => {
     const ip = ipOf(c);
-    const body = await readJson(c);
-    if (!body) return jsonError(c, 400, "invalid_body");
+    const r = await readJsonBody(c);
+    if (!r.ok)
+      return r.tooLarge
+        ? jsonError(c, 413, "payload_too_large")
+        : jsonError(c, 400, "invalid_body");
+    const body = r.body;
     // Validate first: bad input must not consume rate budget or touch the DB.
     const filter = d.getFilter ? await d.getFilter() : undefined;
     const v = validateMessageBody(filter ? { ...cfg, filter } : cfg, body);
@@ -111,28 +134,25 @@ export function registerChat(app: Hono, d: ChatDeps) {
           retry_after_ms: rl.retryAfterMs,
         });
       const msg = {
-        client_id: body.client_id as string,
+        client_id: v.client_id,
         nick: v.nick,
         text: v.text,
         created_at: Date.now(),
       };
       if (d.history.mode === "ephemeral") {
         // Ephemeral mode writes only events; the "e" prefix avoids the messages.id space.
-        const { eventId } = await repo.publishEphemeralMessage(msg);
-        await d.maintain?.();
-        return c.json(
-          { id: `e${eventId}`, created_at: iso(msg.created_at) },
-          201,
-        );
+        const { messageId } = await repo.publishEphemeralMessage(msg);
+        d.maintain?.();
+        return c.json({ id: messageId, created_at: iso(msg.created_at) }, 201);
       }
       const { messageId } = await repo.sendMessageAndEvent(msg);
-      await d.maintain?.();
+      d.maintain?.();
       return c.json(
         { id: String(messageId), created_at: iso(msg.created_at) },
         201,
       );
-    } catch {
-      return jsonError(c, 503, "db_unavailable");
+    } catch (err) {
+      return failDb(c, "chat.messages.post", err);
     }
   });
 
@@ -145,8 +165,8 @@ export function registerChat(app: Hono, d: ChatDeps) {
         return jsonError(c, 429, "rate_limited", {
           retry_after_ms: rl.retryAfterMs,
         });
-    } catch {
-      return jsonError(c, 503, "db_unavailable");
+    } catch (err) {
+      return failDb(c, "chat.stream.rate", err);
     }
     const sinceParam = c.req.query("since");
     const since =
@@ -159,6 +179,12 @@ export function registerChat(app: Hono, d: ChatDeps) {
     // Dynamic import keeps hono/streaming out of every non-stream request path.
     const { streamSSE } = await import("hono/streaming");
     return streamSSE(c, async (stream) => {
+      // SSE 标准字段，给浏览器 EventSource 一个初始重连间隔；
+      // 用 stream.write 而不是 writeSSE({retry})，后者在部分 hono 版本会当成 data 帧。
+      stream.write("retry: 3000\n\n");
+      let counted = true;
+      incMetric("activeStreams");
+      incMetric("streamsOpened");
       const ctrl = runStream({
         repo,
         cfg: {
@@ -187,6 +213,11 @@ export function registerChat(app: Hono, d: ChatDeps) {
       await new Promise<void>((resolve) => {
         stream.onAbort(() => {
           ctrl.stop();
+          // onAbort 可能因客户端半开连接被重复回调：只减一次。
+          if (counted) {
+            counted = false;
+            decMetric("activeStreams");
+          }
           resolve();
         });
       });

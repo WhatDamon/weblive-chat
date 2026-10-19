@@ -1,16 +1,25 @@
 import type { Context, Hono, Next } from "hono";
 import type { AppConfig } from "../lib/config";
-import type { Repo } from "../lib/repo";
+import type { AdminRepo } from "../lib/ports";
 import type { HistoryMode } from "../lib/history";
 import {
   signToken,
   verifyToken,
   clientIpFromHeaders,
+  constantTimeEqual,
   normalizeIp,
 } from "../lib/security";
-import { rateCheck, windowStartFor } from "../lib/limits";
+import { rateCheck } from "../lib/limits";
 import { COPY, fill } from "../lib/copy";
-import { jsonError, readJson, parseIdParam } from "../lib/http";
+import {
+  jsonError,
+  readJsonBody,
+  parseIdParam,
+  failDb,
+  type AppEnv,
+} from "../lib/http";
+import { logInfo } from "../lib/log";
+import { metricsSnapshot } from "../lib/metrics";
 import {
   PURGE_ALL_TABLES,
   PURGE_PHRASES,
@@ -25,11 +34,9 @@ import {
 
 export interface AdminDeps {
   cfg: AppConfig;
-  repo: Repo;
+  repo: AdminRepo;
   history: { retentionDays: number; mode: HistoryMode };
-  maintain: (
-    now?: number,
-  ) => Promise<{ mode: HistoryMode; retentionDays: number }>;
+  maintain: (now?: number) => { mode: HistoryMode; retentionDays: number };
 }
 
 const COOKIE_FLAGS = "HttpOnly; SameSite=Lax; Path=/";
@@ -50,7 +57,7 @@ export function cookieHeader(
   return `${cfg.cookieName}=${token}; Max-Age=${maxAgeSec}; ${COOKIE_FLAGS}${secure}`;
 }
 
-export function registerAdmin(app: Hono, d: AdminDeps) {
+export function registerAdmin(app: Hono<AppEnv>, d: AdminDeps) {
   const { cfg, repo } = d;
 
   const ipOf = (c: Context) =>
@@ -68,15 +75,20 @@ export function registerAdmin(app: Hono, d: AdminDeps) {
         return jsonError(c, 429, "rate_limited", {
           retry_after_ms: rl.retryAfterMs,
         });
-    } catch {
-      return jsonError(c, 503, "db_unavailable");
+    } catch (err) {
+      return failDb(c, "admin.login", err);
     }
-    const body = await readJson(c);
-    const given = (body as { secret?: unknown } | null)?.secret;
+    const r = await readJsonBody(c);
+    if (!r.ok)
+      return r.tooLarge
+        ? jsonError(c, 413, "payload_too_large")
+        : jsonError(c, 400, "invalid_body");
+    const given = r.body.secret;
     if (typeof given !== "string" || given.length === 0)
       return jsonError(c, 400, "invalid_body");
-    // Comparing the literal is fine: the timing-sensitive path is verifyToken below.
-    if (given !== cfg.adminSecret) return jsonError(c, 401, "invalid_secret");
+    // 口令比较必须恒定时间：!== 在第一个不同字节就返回，会泄露前缀匹配长度。
+    if (!constantTimeEqual(given, cfg.adminSecret))
+      return jsonError(c, 401, "invalid_secret");
     const exp = Date.now() + cfg.sessionDays * 86_400_000;
     const token = signToken({ sub: "admin", exp }, cfg.adminSecret);
     c.header("set-cookie", cookieHeader(cfg, token, cfg.sessionDays * 86_400));
@@ -109,7 +121,7 @@ export function registerAdmin(app: Hono, d: AdminDeps) {
     try {
       const stats = await repo.messageStats();
       const online = await repo.presenceCount(Date.now() - cfg.presenceTtlMs);
-      const hist = await d.maintain();
+      const hist = d.maintain();
       return c.json({
         online,
         messages_total: stats.total,
@@ -119,9 +131,11 @@ export function registerAdmin(app: Hono, d: AdminDeps) {
           retention_days: hist.retentionDays,
           estimate_bytes: stats.retained * 400,
         },
+        // 每实例计数：运维排查用，别当业务指标。
+        runtime: metricsSnapshot(),
       });
-    } catch {
-      return jsonError(c, 503, "db_unavailable");
+    } catch (err) {
+      return failDb(c, "admin.stats", err);
     }
   });
 
@@ -140,15 +154,19 @@ export function registerAdmin(app: Hono, d: AdminDeps) {
     const offset = Math.max(Number(rawOffset ?? 0), 0);
     try {
       return c.json({ bans: await repo.banList(limit, offset) });
-    } catch {
-      return jsonError(c, 503, "db_unavailable");
+    } catch (err) {
+      return failDb(c, "admin.bans.get", err);
     }
   });
 
   app.post("/api/admin/bans", guard, async (c) => {
-    const body = await readJson(c);
-    if (!body) return jsonError(c, 400, "invalid_body");
-    const ip = normalizeIp(body.ip as string);
+    const r = await readJsonBody(c);
+    if (!r.ok)
+      return r.tooLarge
+        ? jsonError(c, 413, "payload_too_large")
+        : jsonError(c, 400, "invalid_body");
+    const body = r.body;
+    const ip = typeof body.ip === "string" ? normalizeIp(body.ip) : null;
     const reason =
       typeof body.reason === "string" ? body.reason.trim().slice(0, 200) : "";
     if (!ip)
@@ -164,22 +182,20 @@ export function registerAdmin(app: Hono, d: AdminDeps) {
         Date.now(),
       );
       return c.json({ created, ip });
-    } catch {
-      return jsonError(c, 503, "db_unavailable");
+    } catch (err) {
+      return failDb(c, "admin.bans.post", err);
     }
   });
 
   app.delete("/api/admin/bans/:ip", guard, async (c) => {
     const ip = normalizeIp(c.req.param("ip"));
-    if (!ip)
-      return jsonError(c, 400, "invalid_body", {
-        message: COPY.route.ipInvalid,
-      });
+    // 路径里的键不是合法 IP = 该资源不存在，而不是「请求体非法」。
+    if (!ip) return jsonError(c, 404, "not_found");
     try {
       const ok = await repo.banRemove(ip);
       return ok ? c.body(null, 204) : jsonError(c, 404, "not_found");
-    } catch {
-      return jsonError(c, 503, "db_unavailable");
+    } catch (err) {
+      return failDb(c, "admin.bans.delete", err);
     }
   });
 
@@ -188,13 +204,12 @@ export function registerAdmin(app: Hono, d: AdminDeps) {
     if (!id) return jsonError(c, 400, "invalid_cursor");
     const now = Date.now();
     try {
-      const ok = await repo.softDeleteMessage(id, "admin", now);
+      // 删与广播在同一个事务里：事件 payload 只带消息 id，从不带操作者 IP。
+      const ok = await repo.softDeleteMessageAndEvent(id, "admin", now);
       if (!ok) return jsonError(c, 404, "not_found");
-      // Delete event carries only the message id; never the operator IP.
-      await repo.insertEvent("delete", JSON.stringify({ id: String(id) }), now);
       return c.body(null, 204);
-    } catch {
-      return jsonError(c, 503, "db_unavailable");
+    } catch (err) {
+      return failDb(c, "admin.messages.delete", err);
     }
   });
 
@@ -206,8 +221,8 @@ export function registerAdmin(app: Hono, d: AdminDeps) {
       return jsonError(c, 429, "rate_limited", {
         retry_after_ms: rl.retryAfterMs,
       });
-    } catch {
-      return jsonError(c, 503, "db_unavailable");
+    } catch (err) {
+      return failDb(c, "admin.purge.rate", err);
     }
   };
 
@@ -216,8 +231,12 @@ export function registerAdmin(app: Hono, d: AdminDeps) {
     const ip = ipOf(c);
     const gate = await purgeRateGate(c, ip);
     if (gate) return gate;
-    const body = await readJson(c);
-    const scope = (body as { scope?: unknown } | null)?.scope;
+    const r = await readJsonBody(c);
+    if (!r.ok)
+      return r.tooLarge
+        ? jsonError(c, 413, "payload_too_large")
+        : jsonError(c, 400, "invalid_body");
+    const scope = r.body.scope;
     if (!isPurgeScope(scope))
       return jsonError(c, 400, "invalid_body", {
         message: COPY.route.scopeInvalid,
@@ -240,8 +259,8 @@ export function registerAdmin(app: Hono, d: AdminDeps) {
         token,
         expires_at: expiresAt,
       });
-    } catch {
-      return jsonError(c, 503, "db_unavailable");
+    } catch (err) {
+      return failDb(c, "admin.purge.preview", err);
     }
   });
 
@@ -249,8 +268,12 @@ export function registerAdmin(app: Hono, d: AdminDeps) {
     const ip = ipOf(c);
     const gate = await purgeRateGate(c, ip);
     if (gate) return gate;
-    const body = await readJson(c);
-    if (!body) return jsonError(c, 400, "invalid_body");
+    const r = await readJsonBody(c);
+    if (!r.ok)
+      return r.tooLarge
+        ? jsonError(c, 413, "payload_too_large")
+        : jsonError(c, 400, "invalid_body");
+    const body = r.body;
     const scope = body.scope;
     if (!isPurgeScope(scope))
       return jsonError(c, 400, "invalid_body", {
@@ -264,7 +287,10 @@ export function registerAdmin(app: Hono, d: AdminDeps) {
         }),
       });
     // Second proof of ADMIN_SECRET: a stolen session cookie must not wipe the DB.
-    if (typeof body.secret !== "string" || body.secret !== cfg.adminSecret)
+    if (
+      typeof body.secret !== "string" ||
+      !constantTimeEqual(body.secret, cfg.adminSecret)
+    )
       return jsonError(c, 401, "invalid_secret");
     const verdict = verifyPurgeToken(
       typeof body.token === "string" ? body.token : undefined,
@@ -276,24 +302,23 @@ export function registerAdmin(app: Hono, d: AdminDeps) {
         message: PURGE_TOKEN_MSG[verdict.reason],
       });
     try {
-      // Book the nonce in the current window; maintenance would purge a window-0 marker early.
-      const used = await repo.rateHit(
-        "purge_used",
-        verdict.nonce,
-        windowStartFor(),
-      );
+      // nonce 记在「令牌过期时刻」这个固定窗口：重放在任何时间点都命中同一主键，
+      // 而 window_start 在未来，清理逻辑（< now-2h）不会提前删掉它。
+      const used = await repo.rateHit("purge_used", verdict.nonce, verdict.exp);
       if (used > 1)
         return jsonError(c, 400, "invalid_token", {
           message: COPY.route.tokenUsed,
         });
       const deleted = await repo.clearData(scope);
       // Audit trail: platform logs are the only record after data is destroyed. No secrets.
-      console.error(
-        `[audit] purge scope=${scope} ip=${ip} deleted=${JSON.stringify(deleted)}`,
-      );
+      logInfo("audit.purge", {
+        scope,
+        ip,
+        deleted: JSON.stringify(deleted),
+      });
       return c.json({ scope, deleted });
-    } catch {
-      return jsonError(c, 503, "db_unavailable");
+    } catch (err) {
+      return failDb(c, "admin.purge.run", err);
     }
   });
 }

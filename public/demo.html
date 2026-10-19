@@ -62,6 +62,7 @@
   </details>
 </div>
 
+<script src="/retry.js"></script>
 <!--COPY-->
 <script>
 "use strict";
@@ -191,8 +192,21 @@ async function send() {
 }
 
 let since = 0;
+// Same formula as public/retry.js, used when that external script failed to load:
+// a broken static asset must not throw inside the reconnect loop and stop all retries.
+function fallbackBackoff(attempt) {
+  return Math.min(30000, 1000 * Math.pow(2, attempt));
+}
+function nextBackoff(attempt) {
+  var f = typeof backoffDelay === "function" ? backoffDelay : fallbackBackoff;
+  return f(attempt, Math.random);
+}
+
 async function connect() {
   let wasIdle = false;
+  // Consecutive failures; reset on a successful response so one blip does not slow recovery.
+  let attempt = 0;
+  const backoff = () => sleep(nextBackoff(attempt++));
   while (true) {
     if (paused) { await sleep(1000); continue; } // wait here until the page is visible again
     if (idle) { wasIdle = true; await sleep(POLL_MS); if (!paused && idle) await loadHistory(true); continue; }
@@ -205,10 +219,11 @@ async function connect() {
         let msg = res.status + " " + res.statusText;
         try { const j = await res.json(); msg = (j && j.error && j.error.message) || msg; } catch {}
         setStatus(fill(COPY.chat.statusConnectFailed, { msg }), "bad");
-        await sleep(2000);
+        await backoff();
         continue;
       }
       setStatus(COPY.chat.statusConnected, "ok");
+      attempt = 0;
       const reader = res.body.getReader();
       const dec = new TextDecoder(); let buf = "";
       while (true) {
@@ -225,7 +240,7 @@ async function connect() {
     ctrl = null;
     if (paused || idle) continue; // aborted on purpose (hidden or idle): no reconnect status
     setStatus(COPY.chat.statusReconnecting, "bad");
-    await sleep(1000);
+    await backoff();
   }
 }
 function handleBlock(block) {

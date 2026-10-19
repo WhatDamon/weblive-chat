@@ -1,0 +1,8 @@
+[test]
+# Bun 1.3 的 coverageThreshold 是「逐文件」门槛：每个文件的行覆盖率都必须 ≥ 该值。
+# 实测基线（2026-10-18）：src/index.ts 60.00%（Bun 专属入口，靠 e2e 冒烟覆盖）、
+# src/lib/repo.ts 70.31%（Postgres 分支只在 test:pg 任务下执行）。
+# 因此门槛取当前最低文件水位 0.60；想抬高它，先给 index.ts / repo.ts 补测试。
+# 门槛只许升不许降。
+coverageThreshold = 0.6
+coverageSkipTestFiles = true

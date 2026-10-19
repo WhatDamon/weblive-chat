@@ -1,7 +1,16 @@
 import type { BannedWordsMode } from "./wordfilter";
 import { parseOriginList } from "./security";
+import { join } from "node:path";
 
 export type Provider = "sqlite" | "postgres" | "memory";
+
+/** 文档/示例里出现过的口令：生产环境直接拒绝，避免「照抄上线」。 */
+const PLACEHOLDER_SECRETS = new Set([
+  "replace-with-a-long-random-string",
+  "changeme",
+  "secret",
+]);
+const MIN_SECRET_LEN = 16;
 
 export interface RateCfg {
   msgPerMin: number;
@@ -9,7 +18,8 @@ export interface RateCfg {
   loginPerMin: number;
   /** Preview and execute share this bucket. */
   purgePerMin: number;
-  windowMs: number;
+  /** GET /api/messages：历史是公开数据，但仍然值得一个每 IP 上限。 */
+  historyPerMin: number;
 }
 
 export interface AppConfig {
@@ -39,10 +49,19 @@ export interface AppConfig {
   presenceCountMs: number;
   heartbeatMs: number;
   eventsTtlMs: number;
+  /** 维护里 COUNT 结果的缓存时长：60s 内多次维护复用同一次统计。 */
+  statsTtlMs: number;
   maintenanceEvery: number;
   rate: RateCfg;
   allowedOrigins: string[];
   requireOrigin: boolean;
+  /** Postgres 连接参数：默认单连接，Serverless 下多于 1 只是在抢同一个后端。 */
+  pgPoolMax: number;
+  pgPrepare: boolean;
+  pgIdleTimeoutS: number;
+  pgConnectTimeoutS: number;
+  /** 管理写操作必须同源；生产默认开启（公开 API 的 ALLOWED_ORIGINS 不参与）。 */
+  adminRequireOrigin: boolean;
   sessionDays: number;
   cookieName: string;
 }
@@ -79,8 +98,17 @@ export function loadConfig(
       "DB_PROVIDER=memory cannot run in production/Vercel (no persistence, no shared memory); use sqlite(Turso) or postgres",
     );
   const adminSecret = env.ADMIN_SECRET ?? "";
-  if (envName === "production" && !adminSecret)
-    throw new Error("ADMIN_SECRET is required in production");
+  if (envName === "production") {
+    if (!adminSecret) throw new Error("ADMIN_SECRET is required in production");
+    // 文档里出现过的示例值：复制粘贴上线等于没有口令。
+    if (
+      PLACEHOLDER_SECRETS.has(adminSecret) ||
+      adminSecret.length < MIN_SECRET_LEN
+    )
+      throw new Error(
+        `ADMIN_SECRET must be a random string of at least ${MIN_SECRET_LEN} chars (placeholder values are rejected)`,
+      );
+  }
   // "*" means open mode: taken literally it would lock out every origin-bearing request.
   const rawOrigins = parseOriginList(env.ALLOWED_ORIGINS);
   const allowedOrigins = rawOrigins.includes("*") ? [] : rawOrigins;
@@ -99,7 +127,7 @@ export function loadConfig(
     throw new Error(
       `BANNED_WORDS_MODE must be off|basic|strict, got "${bannedWordsMode}"`,
     );
-  const rateWindowMs = 60_000;
+  const bannedWordsDirRaw = (env.BANNED_WORDS_DIR ?? "").trim();
   return {
     env: envName,
     port: envInt(env, "PORT", 3000),
@@ -115,7 +143,10 @@ export function loadConfig(
       .map((s) => s.trim())
       .filter(Boolean),
     bannedWordsMode,
-    bannedWordsDir: env.BANNED_WORDS_DIR ?? `${process.cwd()}/data/banned`,
+    // 空串是「未设置」而不是「当前目录」：.env.example 里的 `BANNED_WORDS_DIR=` 必须落回默认目录。
+    bannedWordsDir: bannedWordsDirRaw
+      ? bannedWordsDirRaw
+      : join(process.cwd(), "data/banned"),
     bannedWordsAllow: (env.BANNED_WORDS_ALLOW ?? "")
       .split(",")
       .map((s) => s.trim())
@@ -132,18 +163,31 @@ export function loadConfig(
     presenceCountMs: 5_000,
     heartbeatMs: 15_000,
     eventsTtlMs: 3_600_000,
+    statsTtlMs: 60_000,
     maintenanceEvery: envInt(env, "MAINTENANCE_EVERY", 100),
     rate: {
       msgPerMin: envInt(env, "MSG_RATE_PER_MIN", 10),
       streamPerMin: envInt(env, "STREAM_RATE_PER_MIN", 20),
       loginPerMin: envInt(env, "LOGIN_RATE_PER_MIN", 5),
       purgePerMin: envInt(env, "PURGE_RATE_PER_MIN", 5),
-      windowMs: rateWindowMs,
+      historyPerMin: envInt(env, "RATE_HISTORY_PER_MIN", 60),
     },
     allowedOrigins,
     requireOrigin:
       (env.REQUIRE_ORIGIN ?? "false") === "1" ||
       (env.REQUIRE_ORIGIN ?? "").toLowerCase() === "true",
+    pgPoolMax: envInt(env, "PG_POOL_MAX", 1),
+    // 事务模式的连接池（Supabase/pgBouncer）不支持 prepared statement。
+    pgPrepare: (env.PG_PREPARE ?? "1") !== "0",
+    pgIdleTimeoutS: envInt(env, "PG_IDLE_TIMEOUT_S", 20),
+    pgConnectTimeoutS: envInt(env, "PG_CONNECT_TIMEOUT_S", 10),
+    adminRequireOrigin: (() => {
+      const raw = (env.ADMIN_REQUIRE_ORIGIN ?? "").trim().toLowerCase();
+      if (raw === "1" || raw === "true") return true;
+      if (raw === "0" || raw === "false") return false;
+      // 未设置：生产默认开启，本地/测试默认关闭。
+      return envName === "production";
+    })(),
     sessionDays: envInt(env, "ADMIN_SESSION_DAYS", 7),
     cookieName: "wl_admin",
   };

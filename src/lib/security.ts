@@ -1,19 +1,26 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { isIP } from "node:net";
 
-const IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/;
-// Accepts IPv4-mapped IPv6 (::ffff:1.2.3.4, common in XFF); matching only needs symmetry.
-const IPV6 = /^[0-9a-f:.]+$/i;
+// 双栈客户端在 XFF 里常以 mapped 形式出现（::ffff:1.2.3.4）。
+const V4_MAPPED = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i;
 
 export function normalizeIp(raw: string | undefined | null): string | null {
   if (!raw) return null;
   const v = raw.trim();
-  if (
-    !v ||
-    (v.includes(":") && !IPV6.test(v)) ||
-    (!v.includes(":") && !IPV4.test(v))
-  )
-    return null;
-  return v.includes(":") ? v.toLowerCase() : v;
+  if (!v) return null;
+  const mapped = V4_MAPPED.exec(v);
+  const cand = mapped ? mapped[1] : v;
+  const kind = isIP(cand);
+  if (kind === 4) return cand;
+  if (kind === 6) return cand.toLowerCase();
+  return null;
+}
+
+/** 摘要后再比：长度不同也不泄露，且耗时恒定。 */
+export function constantTimeEqual(a: string, b: string): boolean {
+  const ha = createHash("sha256").update(a).digest();
+  const hb = createHash("sha256").update(b).digest();
+  return timingSafeEqual(ha, hb);
 }
 
 export function clientIpFromHeaders(

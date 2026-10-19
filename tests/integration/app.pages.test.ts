@@ -1,5 +1,6 @@
 import { describe, expect, test, afterEach } from "bun:test";
-import { makeApp } from "../helpers";
+import { makeApp, makeRepo, testCfg } from "../helpers";
+import { createApp } from "../../src/app";
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
   while (cleanups.length) await cleanups.pop()!();
@@ -11,6 +12,16 @@ const boot = async () => {
 };
 
 describe("静态页", () => {
+  test("GET /retry.js → 200 JS，长缓存，且不做 {{ }} 渲染", async () => {
+    const { app } = await boot();
+    const res = await app.request("/retry.js");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("javascript");
+    expect(res.headers.get("cache-control")).toContain("s-maxage=300");
+    const body = await res.text();
+    expect(body).toContain("backoffDelay");
+  });
+
   test("GET / → 302 /demo.html；/demo.html 与 /admin 返回 200 且含关键标记", async () => {
     const { app } = await boot();
     const root = await app.request("/");
@@ -42,5 +53,19 @@ describe("静态页", () => {
     const meta = await app.request("/api/meta");
     expect(meta.status).toBe(200);
     expect(meta.headers.get("cache-control")).toBe("no-store");
+  });
+
+  test("DB 启动失败时静态页仍可访问，/api 返回 503", async () => {
+    const { repo, cleanup } = await makeRepo("memory");
+    (repo as unknown as Record<string, unknown>).bootstrap = async () => {
+      throw new Error("db down");
+    };
+    const app = createApp({ cfg: testCfg(), repo });
+    const page = await app.fetch(new Request("http://x/demo.html"));
+    expect(page.status).toBe(200);
+    expect(page.headers.get("cache-control")).toContain("s-maxage=300");
+    const api = await app.fetch(new Request("http://x/api/meta"));
+    expect(api.status).toBe(503);
+    await cleanup();
   });
 });

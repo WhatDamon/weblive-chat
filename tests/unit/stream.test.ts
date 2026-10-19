@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { runStream } from "../../src/lib/stream";
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -131,6 +131,56 @@ describe("runStream", () => {
     ).toBe(true);
   });
 
+  test("since 恰好等于 maxId：不回退游标、不重放已读事件", async () => {
+    // 审查重点第 4 条的边界：游标正好停在最后一条上，探测不能把 since 拉回去重放。
+    let arrived = false;
+    const seen: number[] = [];
+    const repo = {
+      eventsSince: async (since: number, limit: number) => {
+        const live = arrived
+          ? [
+              {
+                id: 251,
+                type: "message",
+                payload: JSON.stringify({ id: "251" }),
+                created_at: 1,
+              },
+            ]
+          : [];
+        return [
+          {
+            id: 250,
+            type: "message",
+            payload: JSON.stringify({ id: "250" }),
+            created_at: 1,
+          },
+        ]
+          .concat(live)
+          .filter((e) => e.id > since)
+          .slice(0, limit);
+      },
+      eventsMaxId: async () => (arrived ? 251 : 250),
+      presenceUpsert: async () => {},
+      presenceCount: async () => 1,
+      banGet: async () => null,
+    };
+    const h = runStream({
+      repo: repo as any,
+      clientId: "c",
+      since: 250,
+      cfg: { ...cfg, eventProbeMs: 0 },
+      emit: (type, data) => {
+        if (type === "message") seen.push(Number((data as any).id));
+      },
+    });
+    await sleep(10);
+    expect(seen).toEqual([]); // 250 已经读过，不能重放
+    arrived = true;
+    await sleep(20);
+    h.stop();
+    expect(seen).toEqual([251]); // 游标只向前，新事件照常收到
+  });
+
   test("空闲无任何写出超 heartbeatMs → emitComment 收到 ping 保活", async () => {
     const f = fakeRepo(); // No events, constant presence count: idle after the first push
     const comments: string[] = [];
@@ -236,5 +286,115 @@ describe("runStream", () => {
     expect(
       out.some((o) => o[0] === "message" && (o[1] as any).id === "1"),
     ).toBe(true);
+  });
+
+  test("DB 异常：只下发 code，不下发原始错误；并记录日志", async () => {
+    const lines: string[] = [];
+    const spy = spyOn(console, "error").mockImplementation((s) => {
+      lines.push(String(s));
+    });
+    const errs: Array<[string, unknown]> = [];
+    const repo = {
+      eventsSince: async () => {
+        throw new Error("postgres://user:pw@host/db refused");
+      },
+      eventsMaxId: async () => 0,
+      presenceUpsert: async () => {},
+      presenceCount: async () => 0,
+      banGet: async () => null,
+    };
+    runStream({
+      repo: repo as never,
+      clientId: "c1",
+      since: 0,
+      cfg: { ...cfg, pollMs: 1, eventProbeMs: 0 },
+      emit: (t, d) => errs.push([t, d]),
+    });
+    await sleep(30);
+    const [type, data] = errs.find(([t]) => t === "error")!;
+    expect(type).toBe("error");
+    expect(data).toEqual({ code: "db_unavailable" });
+    expect(JSON.stringify(data)).not.toContain("postgres://");
+    expect(lines.some((l) => JSON.parse(l).scope === "stream")).toBe(true);
+    spy.mockRestore();
+  });
+});
+
+describe("流·单 tick 排空", () => {
+  test("突发 250 条事件在一个 poll 周期内全部推送（且游标不丢）", async () => {
+    const events = Array.from({ length: 250 }, (_, i) => ({
+      id: i + 1,
+      type: "message",
+      payload: JSON.stringify({ id: String(i + 1) }),
+      created_at: 1,
+    }));
+    // 这里必须自己实现 limit 语义：复用 fakeRepo 会忽略 limit，测试会假绿。
+    const repo = {
+      eventsSince: async (since: number, limit: number) =>
+        events.filter((e) => e.id > since).slice(0, limit),
+      eventsMaxId: async () => 250,
+      presenceUpsert: async () => {},
+      presenceCount: async () => 1,
+      banGet: async () => null,
+    };
+    const seen: number[] = [];
+    const h = runStream({
+      repo: repo as any,
+      clientId: "c",
+      since: 0,
+      // pollMs 远大于等待时间：整个断言窗口只允许发生「一个」tick，
+      // 否则跨 tick 累积也能凑到 250 条，测不出单 tick 排空。
+      cfg: { ...cfg, pollMs: 10_000, idlePollMs: 10_000, eventProbeMs: 0 },
+      emit: (type, data) => {
+        if (type === "message") seen.push(Number((data as any).id));
+      },
+    });
+    await sleep(60);
+    h.stop();
+    expect(seen).toHaveLength(250);
+  });
+});
+
+describe("流·注入时钟", () => {
+  test("空闲超过 idleAfterMs 后改用 idlePollMs（注入 now/sleep）", async () => {
+    let t = 1_000_000;
+    const sleeps: number[] = [];
+    const repo = {
+      eventsSince: async () => [],
+      eventsMaxId: async () => 0,
+      presenceUpsert: async () => {},
+      presenceCount: async () => 1,
+      banGet: async () => null,
+    };
+    const ctrl = runStream({
+      repo: repo as any,
+      clientId: "c",
+      since: 0,
+      cfg: {
+        ...cfg,
+        pollMs: 100,
+        idlePollMs: 3000,
+        idleAfterMs: 1000,
+        eventProbeMs: 0,
+        heartbeatMs: 999_999,
+        presenceUpsertMs: 999_999,
+        presenceCountMs: 999_999,
+      },
+      emit: () => {},
+      now: () => t,
+      // 必须让出一次宏任务：若立即 resolve，整个流循环会变成微任务忙循环，
+      // 测试自己的 setTimeout 永远排不上，整个用例挂死。
+      sleep: async (ms: number) => {
+        sleeps.push(ms);
+        t += ms;
+        await new Promise<void>((r) => setTimeout(r, 0));
+      },
+    });
+    // 注入的 sleep 立即返回，用真实时间只等「微任务跑够轮数」。
+    await new Promise((r) => setTimeout(r, 20));
+    ctrl.stop();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(sleeps[0]).toBe(100); // 有事件节奏：pollMs
+    expect(sleeps[sleeps.length - 1]).toBe(3000); // 静默超阈值：idlePollMs
   });
 });

@@ -1,5 +1,7 @@
 # WebLive Chat API 参考（v1）
 
+> 契约版本：v1（2026-09-09 起；2026-10 优化批次为向后兼容新增）
+
 本文档描述当前对外接口契约；改动请保持向后兼容并同步更新本文件。接入路线、客户端契约（重连/双游标/补齐）与排查见 [`integration.md`](./integration.md)。
 
 - 时间：响应中的 `created_at` 一律 **ISO 8601 UTC**（SSE 事件载荷内为 **epoch 毫秒数字**，见下）。
@@ -13,6 +15,7 @@
 | 端点 | 说明 |
 |---|---|
 | `GET /api/meta` | 轻量配置（**无 DB 依赖**）：`{limits:{nick_max, text_max, retention_days}, presence:{ttl_s}, client_ip, origin_mode}`；`origin_mode` 为 `open`（未配白名单）/`locked`（已配白名单，便于线上排查） |
+| `GET /api/health` | 探活：`{ok, provider, mode, runtime}`；`provider` 为实际 adapter，`runtime` 为**本实例**计数（`active_streams` / `streams_opened` / `db_errors` / `maintenance_runs`，实例回收即归零）。DB 不可用时 `503 {ok:false}`（非错误信封） |
 | `GET /api/messages?before=<id>&limit=<n>` | 历史回溯，**newest-first**；`limit` 缺省 50（合法 1–200 夹取，非纯数字 → `400 invalid_cursor`）；软删消息以占位返回；回溯深度受 `HISTORY_MAX_BACKFILL` 限制 |
 | `GET /api/messages?since=<id>&limit=<n>` | 增量补齐（gap-sync），**oldest-first**；与 SSE 事件按 `id` 去重由客户端负责 |
 | `POST /api/messages` | body `{client_id, nick, text}` → `201 {id, created_at}` |
@@ -21,6 +24,7 @@
 规则与细节：
 
 - `before` 与 `since` **互斥**（同时给出 → `400 invalid_body`）。
+- `since=0` 是合法游标，表示**从最早一条开始**（升序）；`before` 则必须 ≥ 1。
 - `limit`：纯数字才合法（`0` 夹到 `1`）；浮点/负数/非数字 → `400 invalid_cursor`。最大值 200。
 - `ephemeral` 模式（历史超限自动降级）下，`GET /api/messages` 恒返回 `{messages: [], mode: "ephemeral"}`。
 - 普通模式响应：`{messages: MessageView[], mode: "full"|"degraded_retention"}`，其中
@@ -34,6 +38,7 @@
   - `since`：可选，须为纯数字，否则按 `0`（从头增量）。
   - `client_id`：可选，须为合法 UUID；用于 presence 归因与多标签去重；缺省 = 每连接按独立 `anon-<uuid>` 计入心跳。
   - 开流前按 IP 限流（`stream` 桶，`STREAM_RATE_PER_MIN`），超限 `429 rate_limited`。
+- `GET /api/messages` 按 IP 限流（`history` 桶，`RATE_HISTORY_PER_MIN`，默认 60 次/min），与发消息/开流的预算互不挤占。
   - **封禁不拦流**（禁言不禁看）：被禁 IP 的流保持打开，仅首帧收到 `ban` 提示。
 
 ### SSE 事件类型
@@ -60,6 +65,8 @@
 
 ## 2. 管理端点（需会话 Cookie `wl_admin`）
 
+> **同源要求**：非 `GET`/`HEAD`/`OPTIONS` 的管理请求（含 `login`）默认必须带同源 `Origin`——生产环境自动开启（`ADMIN_REQUIRE_ORIGIN` 可显式覆盖）。跨站 → `403 origin_not_allowed`，不带 Origin → `403 missing_origin`。读接口不受限，方便只读监控。**curl 登录需自行加 `-H 'origin: https://<你的域名>'`。** 公开 API 的 `ALLOWED_ORIGINS` 不参与该判断（公开白名单不应授权删库）。
+
 会话：`POST /api/admin/login` 以 `ADMIN_SECRET` 换 **HMAC 签名 HttpOnly Cookie**（`HttpOnly; SameSite=Lax; Path=/`，生产加 `Secure`；有效 `ADMIN_SESSION_DAYS` 天）。未认证/过期统一 `401 unauthorized`。
 
 | 端点 | 说明 |
@@ -71,7 +78,7 @@
 | `POST /api/admin/bans` | body `{ip, reason?}` → `200 {created: boolean, ip}`；**幂等 upsert**：重复封禁覆盖 reason 并回 `created:false`（无 409）；ip 不合法 → `400 invalid_body` |
 | `DELETE /api/admin/bans/:ip` | 解封 → `204`；不存在 → `404 not_found` |
 | `DELETE /api/admin/messages/:id` | **软删**（占位保留、内容清空、`deleted_by='admin'`，不存操作者 IP）并广播 `delete` 事件 → `204`；不存在 → `404 not_found` |
-| `GET /api/admin/stats` | `{online, messages_total, messages_retained, history:{mode, retention_days, estimate_bytes}}` —— `messages_total`/`messages_retained` 同为**物理行数**（含软删占位）；`estimate_bytes = retained × 400`；读取触发一次维护评估（刷新档位/清理） |
+| `GET /api/admin/stats` | `{online, messages_total, messages_retained, history:{mode, retention_days, estimate_bytes}, runtime}`（`runtime` 同 `/api/health`） —— `messages_total`/`messages_retained` 同为**物理行数**（含软删占位）；`estimate_bytes = retained × 400`；读取会触发一次维护评估，但**不等待**它完成（清理在后台跑，档位可能滞后一轮） |
 | `POST /api/admin/purge/preview` | 危险操作·预检（**只读**）：body `{scope}`（`chat`/`full`）→ `200 {scope, scope_desc, will_delete, keep, counts, confirm_phrase, token, expires_at}`；非法 scope → `400 invalid_body` |
 | `POST /api/admin/purge` | 危险操作·执行：body `{scope, token, confirm, secret}` → `200 {scope, deleted}`；短语不符 → `400 invalid_confirm`；口令错 → `401 invalid_secret`；令牌无效/过期/复用 → `400 invalid_token` |
 
@@ -129,6 +136,7 @@
 | 403 | `origin_not_allowed` | Origin 不在名单；响应体附 `origin`（被拒来源）与 `allowed_origins_count` |
 | 403 | `missing_origin` | `REQUIRE_ORIGIN=1` 下请求未带 Origin |
 | 404 | `not_found` | 解封不存在 / 删不存在的消息 |
+| 413 | `payload_too_large` | 请求体超过 16KB（`content-length` 与实际字节数都会检查） |
 | 429 | `rate_limited` | 超限（附 `retry_after_ms`） |
 | 503 | `db_unavailable` | 存储不可用（数据库拒写或连不上，如额度耗尽）；稍后重试 |
 | 500 | — | 未预期服务端错误 |

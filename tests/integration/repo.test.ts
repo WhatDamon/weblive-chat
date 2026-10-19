@@ -15,6 +15,36 @@ function contract(provider: TestProvider) {
       await cleanup();
     });
 
+    test("idAtOffset：按 id 倒序取第 n 个，越界返回 null", async () => {
+      const { repo, cleanup } = await makeRepo(provider);
+      for (let i = 1; i <= 3; i++)
+        await repo.sendMessageAndEvent({
+          client_id: "b1b1b1b1-b1b1-4b1b-8b1b-b1b1b1b1b1b1",
+          nick: "n",
+          text: `t${i}`,
+          created_at: i,
+        });
+      expect(await repo.idAtOffset(0)).toBe(3);
+      expect(await repo.idAtOffset(2)).toBe(1);
+      expect(await repo.idAtOffset(9)).toBeNull();
+      await cleanup();
+    });
+
+    test("DDL 幂等：schema_version=1，事件与限流清理索引存在", async () => {
+      const { repo, cleanup } = await makeRepo(provider);
+      await repo.bootstrap();
+      await repo.bootstrap();
+      const info = await repo.schemaInfo();
+      expect(info.version).toBe(1);
+      expect(info.indexes).toEqual(
+        expect.arrayContaining([
+          "idx_events_created_at",
+          "idx_rate_limits_window",
+        ]),
+      );
+      await cleanup();
+    });
+
     test("sendMessageAndEvent 事务双写：返回两个自增 id，messages 与 events 各一行", async () => {
       const { repo, cleanup } = await makeRepo(provider);
       const now = Date.now();
@@ -56,19 +86,27 @@ function contract(provider: TestProvider) {
       expect(before.map((m) => m.text)).toEqual(["m1", "m0"]); // older than id2, descending
       const since = await repo.historySince(sent[0].messageId, 10);
       expect(since.map((m) => m.text)).toEqual(["m1", "m2"]);
-      const ok = await repo.softDeleteMessage(
+      const ok = await repo.softDeleteMessageAndEvent(
         sent[1].messageId,
         "admin",
         now + 100,
       );
       expect(ok).toBe(true);
       // second soft delete matches no row (deleted_at already set)
-      const okAgain = await repo.softDeleteMessage(
+      const okAgain = await repo.softDeleteMessageAndEvent(
         sent[1].messageId,
         "admin",
         now + 200,
       );
       expect(okAgain).toBe(false);
+      // 只有真正删掉的那次才广播 delete 事件
+      const dels = (await repo.eventsSince(0, 50)).filter(
+        (e) => e.type === "delete",
+      );
+      expect(dels).toHaveLength(1);
+      expect(JSON.parse(dels[0].payload)).toEqual({
+        id: String(sent[1].messageId),
+      });
       const all = await repo.historyBefore(PG_SAFE_MAX_ID, 10);
       expect(all.find((m) => m.id === sent[1].messageId)).toMatchObject({
         text: null,
@@ -111,23 +149,24 @@ function contract(provider: TestProvider) {
       await cleanup();
     });
 
-    test("publishEphemeralMessage 只写 events：payload id=e<id>，messages 不增", async () => {
+    test("publishEphemeralMessage：一次写入，payload.id 即返回 id，messages 不增", async () => {
       const { repo, cleanup } = await makeRepo(provider);
       const statsBefore = await repo.messageStats();
       const now = Date.now();
-      const { eventId } = await repo.publishEphemeralMessage({
+      const { messageId } = await repo.publishEphemeralMessage({
         client_id: "e1e1e1e1-e1e1-4e1e-8e1e-e1e1e1e1e1e1",
         nick: "乙",
         text: "live-only",
         created_at: now,
       });
-      expect(eventId).toBeGreaterThan(0);
+      // e + uuid：既不撞 messages.id 的数字命名空间，也不必先插后改。
+      expect(messageId).toMatch(/^e[0-9a-f-]{36}$/);
       const evs = await repo.eventsSince(0, 10);
       expect(evs).toHaveLength(1);
       expect(evs[0].type).toBe("message");
       expect(evs[0].created_at).toBe(now); // both drivers normalize created_at to a number
       const pl = JSON.parse(evs[0].payload);
-      expect(pl.id).toBe(`e${eventId}`); // e-prefix keeps out of the messages.id namespace
+      expect(pl.id).toBe(messageId);
       expect(pl.text).toBe("live-only");
       expect((await repo.messageStats()).total).toBe(statsBefore.total);
       await cleanup();

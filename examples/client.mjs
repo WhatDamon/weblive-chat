@@ -7,7 +7,16 @@ import { fileURLToPath } from "node:url";
 
 const BASE = (process.argv[2] ?? "http://localhost:3000").replace(/\/+$/, "");
 const NICK = process.argv[3] ?? "example-client";
-const RECONNECT_MS = 1000; // keep >= 1s or reconnects trip the stream rate limit (20/min)
+// Canonical formula lives in public/retry.js (backoffDelay); keep this copy in sync.
+// Exponential with downward jitter, capped at 30s: a fixed 1s retry turns a server
+// outage into a self-DDoS and trips the stream bucket (20/min).
+const RETRY_BASE_MS = 1000;
+const RETRY_MAX_MS = 30_000;
+const backoffMs = (attempt) =>
+  Math.round(
+    Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** attempt) *
+      (0.5 + Math.random() * 0.5),
+  );
 const SEEN_MAX = 5000;
 const IDLE_MS = 45_000;
 
@@ -100,12 +109,16 @@ export class ChatClient {
   }
 
   async #loop() {
+    let attempt = 0;
     while (!this.#closed) {
-      let wait = RECONNECT_MS;
+      // Computed before the attempt counter grows: the first retry waits 0.5–1s.
+      let wait = backoffMs(attempt);
       try {
         await this.backfill();
         await this.#stream(); // normal return = platform or network cut the stream
+        attempt = 0; // connected successfully: next interruption starts from the shortest wait
       } catch (err) {
+        attempt = Math.min(attempt + 1, 16);
         if (!this.#closed) this.#emit("error", err);
         if (err?.retryAfterMs) wait = Math.max(wait, err.retryAfterMs);
       }

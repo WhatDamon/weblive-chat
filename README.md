@@ -55,15 +55,20 @@ turso db tokens create weblive-chat   # → TURSO_AUTH_TOKEN
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `ADMIN_SECRET` | 仅本地有内置值 | 管理口令；生产缺失即拒绝启动 |
+| `ADMIN_SECRET` | 仅本地有内置值 | 管理口令；生产缺失、短于 16 位或使用示例值（如 `replace-with-a-long-random-string`）都拒绝启动 |
 | `DB_PROVIDER` | `sqlite` | `sqlite` ｜ `postgres` ｜ `memory`（仅本地） |
 | `DATABASE_URL` | `file:./data/dev.db` | `file:` ｜ `libsql://` ｜ `postgres://` |
 | `TURSO_AUTH_TOKEN` | 空 | 仅 Turso（`libsql://`）需要 |
 | `ALLOWED_ORIGINS` | 空（开放） | 逗号分隔 Origin，支持 `*.damon233.top` 通配整域；设置后即 fail-closed |
 | `REQUIRE_ORIGIN` | `0` | `1` 时无 Origin 的直连（curl/脚本）也拒绝 |
+| `PG_POOL_MAX` | `1` | Postgres 每实例连接数；Serverless 下不建议调大 |
+| `PG_PREPARE` | `1` | 设为 `0` 关闭 prepared statement（Supabase/pgBouncer 事务模式） |
+| `PG_IDLE_TIMEOUT_S` | `20` | Postgres 空闲连接回收秒数 |
+| `PG_CONNECT_TIMEOUT_S` | `10` | Postgres 建连超时秒数 |
+| `ADMIN_REQUIRE_ORIGIN` | 生产开 / 本地关 | 管理写操作（封禁、删消息、清库）必须同源；读接口不受限 |
 | `NODE_ENV` | `development` | Vercel 自动设为 `production` |
 
-其余可调项（限流、长度上限、历史保留、违禁词、会话天数、维护频率等）见 **[`.env.example`](.env.example)**，每项带注释。
+其余可调项（限流 `MSG_RATE_PER_MIN` / `STREAM_RATE_PER_MIN` / `LOGIN_RATE_PER_MIN` / `RATE_HISTORY_PER_MIN` / `PURGE_RATE_PER_MIN`、长度上限、历史保留、违禁词、会话天数、维护频率等）见 **[`.env.example`](.env.example)**，每项带注释。
 
 ⚠️ **设置 `ALLOWED_ORIGINS` 必须把部署自身域名一并列入**（同源 `/demo.html`、`/admin` 的写请求也带 Origin），否则会 `403 origin_not_allowed`；**换域名后要同步该变量并重新部署**。语法、通配与排查见 [`docs/api.md`](docs/api.md) §3。
 
@@ -84,6 +89,9 @@ turso db tokens create weblive-chat   # → TURSO_AUTH_TOKEN
 - **封禁按精确 IP**：NAT/CGNAT 下可能波及同网段用户；支持 IPv6，前缀/CIDR 封禁未实现。
 - **`x-forwarded-for` 取首跳**：只有直连 Vercel（该头由平台注入、不可伪造）时才可信；前置了 CDN 需自行调整。
 - **历史即公开存档**：免登录设计下任何人都能翻阅历史；可用 `HISTORY_MAX_BACKFILL` 限制回溯深度。
+- **后台维护可能被平台冻结打断**：清理在响应返回后才跑，Serverless 实例在响应后可能立刻冻结，本轮维护就被丢弃。维护是幂等的（`CREATE TABLE IF NOT EXISTS`、按时间/行数删除），且每 `MAINTENANCE_EVERY` 次写入会重新触发，所以后果是**清理延后**，不是数据错乱。
+- **在线人数可被伪造**：`client_id` 未认证，恶意客户端可构造多个 id 抬高在线数。仅作氛围指标，不要用于计费或风控。
+- **已删消息的正文会在事件表里保留约 1 小时**：新连接以 `since=0` 接入时会重放这段时间的出站事件（紧随其后是 `delete` 事件）。客户端必须按消息 `id` 去重并处理删除事件，不能只看正文。
 - **合规**：IP 属个人数据，封禁表会留存被封 IP 与原因，部署前请确认用途符合当地法规。
 - **平台说明的时效**：文中涉平台行为与限额的表述（函数文件系统为临时、`x-forwarded-for` 由平台注入、单次运行时长上限）核对于 **2026-09-12**；平台调整后以官方文档为准。
 
