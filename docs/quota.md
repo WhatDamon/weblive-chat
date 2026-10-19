@@ -127,16 +127,22 @@ useEffect(() => {
 服务端对开流本身有 IP 限流（默认 20 次/分），断网、被限流时若立即重连，实例时间与调用数会一起暴涨。
 
 ```js
-let backoff = 1000;
+/** 与 /retry.js 的 backoffDelay 同公式（那才是唯一权威实现）：指数 + 抖动，封顶 30s */
+const backoff = (n) =>
+  Math.round(Math.min(30_000, 1000 * 2 ** n) * (0.5 + Math.random() * 0.5));
+
+let attempt = 0;
 try {
   // 打开流并读事件……
-  backoff = 1000;                                     // 成功连上即重置
-} catch { /* 断流 */ }
-// 429 会带 retry_after_ms，优先听它的
-const wait = Math.min(err?.error?.retry_after_ms ?? backoff, 30_000);
-backoff = Math.min(backoff * 2, 30_000);
-await sleep(wait);
+  attempt = 0;                                      // 成功连上即复位
+} catch {
+  attempt = Math.min(attempt + 1, 16);              // 只有断流/失败才增长
+}
+// 429 会带 retry_after_ms，比本地退避更长时听它的
+await sleep(Math.max(backoff(attempt), err?.error?.retry_after_ms ?? 0));
 ```
+
+抖动是必须的：没有抖动时，服务端一次重启会让所有标签页在同一毫秒重连（见 `docs/integration.md` §3.3）。
 
 ### R6 别为了「在线人数」而常连
 

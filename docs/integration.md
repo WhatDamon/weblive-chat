@@ -138,15 +138,24 @@ async function backfill() {
   for (const m of (await res.json()).messages) dispatch("message", m);
 }
 
+/** 与 /retry.js 的 backoffDelay 同公式：指数增长 + 抖动，封顶 30s */
+const backoff = (n) =>
+  Math.round(Math.min(30000, 1000 * 2 ** n) * (0.5 + Math.random() * 0.5));
+
 async function loop() {
+  let attempt = 0;
   for (;;) {
+    let wait = backoff(attempt);
     try {
       await backfill();
       await connect();
+      attempt = 0; // 连上过就复位，下次中断从最短等待开始
     } catch (err) {
       onEvent.error(err);
+      attempt = Math.min(attempt + 1, 16);
+      if (err?.retryAfterMs) wait = Math.max(wait, err.retryAfterMs);
     }
-    await new Promise((r) => setTimeout(r, 1000)); // 退避 1s 再连
+    await new Promise((r) => setTimeout(r, wait));
   }
 }
 loop();
@@ -377,6 +386,7 @@ const toISO = (v) => new Date(toMs(v)).toISOString();
 |---|---|---|---|
 | 发消息 `msg` | 10 次/分钟 | 按 IP | `429 rate_limited` |
 | 开流 `stream` | 20 次/分钟 | 按 IP | `429 rate_limited` |
+| 读历史 `history` | 60 次/分钟 | 按 IP | `429 rate_limited` |
 | 管理登录 `login` | 5 次/分钟 | 按 IP | `429 rate_limited` |
 
 固定 60s 窗口（按 epoch 对齐），可在部署侧用环境变量调整；实际值以 `/api/meta` 与运营配置为准。
@@ -385,9 +395,9 @@ const toISO = (v) => new Date(toMs(v)).toISOString();
 
 - **本地节流**：连点发送按钮前先判断，别把 429 当成正常交互（例如发送中禁用按钮 300ms）。
 - **退避**：拿到 `retry_after_ms` 就按它等，不要固定 1s 死连——会被继续限流。
-- **重连退避**：连续失败时用指数退避（1s → 2s → 4s，上限 30s），成功后复位。
+- **重连退避**：见上文 [§3.3](#33-连接一定会断这是设计的一部分)——指数退避 + 抖动是**客户端义务**，公式与 `public/retry.js` 的用法只在那里维护一份。
 - **人数即成本**：自托管时注意在线人数 = 并发 SSE 连接。服务端已把 presence 写入按连接节流到
-  10s/次、人数统计 5s/次，仍建议控制无意义的常驻连接（例如页面不可见时保留但不再渲染）。
+  20s/次、人数统计 5s/次，仍建议控制无意义的常驻连接（例如页面不可见时保留但不再渲染）。
 
 ---
 
